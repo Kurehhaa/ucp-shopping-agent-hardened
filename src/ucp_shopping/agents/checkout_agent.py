@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -91,7 +91,7 @@ class CheckoutAgent:
 
         orders: list[OrderSummary] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error("checkout_task_failed", error=str(result))
                 continue
             if result is not None:
@@ -139,9 +139,7 @@ class CheckoutAgent:
                     message=f"Creating checkout at {merchant.name}...",
                 )
 
-            checkout = await self._ucp_client.create_checkout(
-                merchant_url, line_items
-            )
+            checkout = await self._ucp_client.create_checkout(merchant_url, line_items)
             checkout_session_id = checkout.get("id", "")
 
             # 2. Update with shipping address (mock address for demo)
@@ -178,9 +176,7 @@ class CheckoutAgent:
                     message=f"Completing order at {merchant.name}...",
                 )
 
-            completion = await self._ucp_client.complete_checkout(
-                merchant_url, checkout_session_id
-            )
+            completion = await self._ucp_client.complete_checkout(merchant_url, checkout_session_id)
 
             order_id = completion.get("order_id", completion.get("id", checkout_session_id))
             total = sum(i.total for i in items)
@@ -193,7 +189,7 @@ class CheckoutAgent:
                 total=round(total, 2),
                 status="confirmed",
                 tracking_url=completion.get("tracking_url"),
-                created_at=datetime.now(tz=timezone.utc),
+                created_at=datetime.now(tz=UTC),
             )
 
             if stream:

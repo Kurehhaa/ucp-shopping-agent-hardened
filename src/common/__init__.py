@@ -2,6 +2,6 @@
 
 from common.config import Settings
 from common.logging import setup_logging
-from common.models import HealthResponse, ErrorResponse
+from common.models import ErrorResponse, HealthResponse
 
-__all__ = ["Settings", "setup_logging", "HealthResponse", "ErrorResponse"]
+__all__ = ["ErrorResponse", "HealthResponse", "Settings", "setup_logging"]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from common.config import Settings as BaseSettings
 
 
@@ -22,11 +24,13 @@ class Settings(BaseSettings):
     default_model: str = "gpt-4o-mini"
 
     # Merchant discovery
-    known_merchant_urls: list[str] = [
-        "http://localhost:8020/merchants/techzone",
-        "http://localhost:8020/merchants/homegoods",
-        "http://localhost:8020/merchants/megamart",
-    ]
+    known_merchant_urls: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:8020/merchants/techzone",
+            "http://localhost:8020/merchants/homegoods",
+            "http://localhost:8020/merchants/megamart",
+        ]
+    )
     max_merchants: int = 10
 
     # Timeouts and limits

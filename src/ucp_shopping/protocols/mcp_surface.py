@@ -49,9 +49,7 @@ SHOPPING_TOOLS: list[MCPToolDefinition] = [
     ),
     MCPToolDefinition(
         name="compare_prices",
-        description=(
-            "Compare prices for a specific product across all known merchants."
-        ),
+        description=("Compare prices for a specific product across all known merchants."),
         inputSchema={
             "type": "object",
             "properties": {

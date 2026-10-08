@@ -149,7 +149,8 @@ class A2ABridge:
         try:
             response = await client.post(url, json=payload)
             response.raise_for_status()
-            return response.json()
+            data: dict[str, Any] = response.json()
+            return data
         except Exception as exc:
             logger.error("a2a_send_task_failed", agent_url=agent_url, error=str(exc))
             return {
@@ -183,7 +184,8 @@ class A2ABridge:
         try:
             response = await client.get(url)
             response.raise_for_status()
-            return response.json()
+            data: dict[str, Any] = response.json()
+            return data
         except Exception as exc:
             logger.error("a2a_get_task_failed", agent_url=agent_url, error=str(exc))
             return {

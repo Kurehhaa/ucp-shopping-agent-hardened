@@ -7,8 +7,10 @@ endpoints consume via ``async for`` iteration.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+import contextlib
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -64,7 +66,7 @@ class ShoppingEventStream:
             session_id=session_id,
             data=data or {},
             message=message,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
         )
 
         # Persist in history
@@ -101,9 +103,7 @@ class ShoppingEventStream:
         ``error`` event, or when ``close(session_id)`` is called (which
         pushes ``None`` as a sentinel).
         """
-        queue: asyncio.Queue[ShoppingEvent | None] = asyncio.Queue(
-            maxsize=self._max_queue_size
-        )
+        queue: asyncio.Queue[ShoppingEvent | None] = asyncio.Queue(maxsize=self._max_queue_size)
         self._queues.setdefault(session_id, []).append(queue)
 
         # Replay any historical events first so late joiners catch up
@@ -132,10 +132,8 @@ class ShoppingEventStream:
     def close(self, session_id: str) -> None:
         """Signal all subscribers of *session_id* to stop iterating."""
         for queue in self._queues.get(session_id, []):
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
         self._queues.pop(session_id, None)
 
     def get_history(self, session_id: str) -> list[ShoppingEvent]:

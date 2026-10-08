@@ -6,7 +6,7 @@ shipping cost, delivery speed, and stock availability.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -80,10 +80,14 @@ class ComparisonAgent:
             best_price = min(scored, key=lambda p: p.price) if scored else None
 
             # Find best shipping (lowest cheapest shipping cost)
-            best_shipping = min(
-                scored,
-                key=lambda p: self._cheapest_shipping(p),
-            ) if scored else None
+            best_shipping = (
+                min(
+                    scored,
+                    key=lambda p: self._cheapest_shipping(p),
+                )
+                if scored
+                else None
+            )
 
             # Recommended is highest overall score
             recommended = scored[0] if scored else None
@@ -108,7 +112,7 @@ class ComparisonAgent:
             entries=entries,
             total_merchants=len(merchant_ids),
             total_products_found=total_products,
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=datetime.now(tz=UTC),
         )
 
         logger.info(

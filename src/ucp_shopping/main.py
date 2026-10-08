@@ -10,7 +10,6 @@ import structlog
 import uvicorn
 
 from common import setup_logging
-
 from ucp_shopping.api import create_app
 from ucp_shopping.config import Settings, get_settings
 from ucp_shopping.mock_merchants.merchant_factory import MerchantFactory

@@ -121,9 +121,7 @@ class ShoppingPlanner:
         from anthropic import AsyncAnthropic
 
         if self._anthropic_client is None:
-            self._anthropic_client = AsyncAnthropic(
-                api_key=self._settings.anthropic_api_key
-            )
+            self._anthropic_client = AsyncAnthropic(api_key=self._settings.anthropic_api_key)
 
         client: AsyncAnthropic = self._anthropic_client  # type: ignore[assignment]
         response = await client.messages.create(
@@ -133,7 +131,11 @@ class ShoppingPlanner:
             messages=[{"role": "user", "content": query}],
         )
 
-        raw = response.content[0].text if response.content else "{}"
+        raw = "{}"
+        for block in response.content:
+            if block.type == "text":
+                raw = block.text
+                break
         return self._parse_plan_json(raw, query)
 
     # ------------------------------------------------------------------
@@ -172,9 +174,7 @@ class ShoppingPlanner:
         return ShoppingPlan(
             items=items,
             overall_budget=(
-                Decimal(str(overall_budget_val))
-                if overall_budget_val is not None
-                else None
+                Decimal(str(overall_budget_val)) if overall_budget_val is not None else None
             ),
             preferences=ShoppingPreferences(
                 prefer_single_merchant=prefs_data.get("prefer_single_merchant", False),

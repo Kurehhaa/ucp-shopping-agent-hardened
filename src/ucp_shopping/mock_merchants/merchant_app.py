@@ -9,12 +9,11 @@ application for demo and testing purposes.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
 # Request / response models (lightweight, internal to the mock)
@@ -261,9 +260,7 @@ class MockMerchantApp:
 
             # Category filter
             if category:
-                results = [
-                    p for p in results if p.get("category", "").lower() == category.lower()
-                ]
+                results = [p for p in results if p.get("category", "").lower() == category.lower()]
 
             # Price range filters
             if min_price is not None:
@@ -340,16 +337,14 @@ class MockMerchantApp:
                 },
                 "shipping_address": None,
                 "selected_shipping": None,
-                "created_at": datetime.now(tz=timezone.utc).isoformat(),
-                "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+                "created_at": datetime.now(tz=UTC).isoformat(),
+                "updated_at": datetime.now(tz=UTC).isoformat(),
             }
             merchant._checkout_sessions[session_id] = session
             return session
 
         @app.put("/api/v1/checkout/sessions/{session_id}")
-        async def update_checkout(
-            session_id: str, req: UpdateCheckoutRequest
-        ) -> dict[str, Any]:
+        async def update_checkout(session_id: str, req: UpdateCheckoutRequest) -> dict[str, Any]:
             """Update an existing checkout session."""
             session = merchant._checkout_sessions.get(session_id)
             if session is None:
@@ -386,7 +381,7 @@ class MockMerchantApp:
             if session["shipping_address"] and session["state"] == "incomplete":
                 session["state"] = "ready_for_complete"
 
-            session["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+            session["updated_at"] = datetime.now(tz=UTC).isoformat()
             return session
 
         @app.post("/api/v1/checkout/sessions/{session_id}/complete")
@@ -416,12 +411,12 @@ class MockMerchantApp:
                 "total": session["total"],
                 "tracking_number": f"TRK{uuid.uuid4().hex[:10].upper()}",
                 "tracking_url": f"https://tracking.example.com/TRK{uuid.uuid4().hex[:10].upper()}",
-                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "created_at": datetime.now(tz=UTC).isoformat(),
                 "history": [
                     {
                         "event_type": "order_confirmed",
                         "message": "Order has been confirmed and is being processed.",
-                        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                        "timestamp": datetime.now(tz=UTC).isoformat(),
                     }
                 ],
             }
@@ -431,7 +426,7 @@ class MockMerchantApp:
             # Update session state
             session["state"] = "completed"
             session["order_id"] = order_id
-            session["completed_at"] = datetime.now(tz=timezone.utc).isoformat()
+            session["completed_at"] = datetime.now(tz=UTC).isoformat()
 
             return {
                 "id": session_id,
