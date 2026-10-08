@@ -84,7 +84,7 @@ class SplitOrderOptimizer:
             # Find cheapest total (price + cheapest shipping)
             best = min(
                 candidates,
-                key=lambda p: p.price + self._cheapest_shipping_cost(p),
+                key=lambda p: p.price * entry.quantity + self._cheapest_shipping_cost(p),
             )
             shipping = self._cheapest_shipping_cost(best)
 
@@ -96,6 +96,7 @@ class SplitOrderOptimizer:
                     merchant_id=best.merchant_id,
                     merchant_url=self._get_merchant_url(best),
                     price=best.price,
+                    quantity=entry.quantity,
                     shipping_cost=shipping,
                 )
             )
@@ -104,7 +105,7 @@ class SplitOrderOptimizer:
         items = self._apply_free_shipping_thresholds(items, matrix)
 
         # Calculate totals
-        total_product = round(sum(i.price for i in items), 2)
+        total_product = round(sum(i.subtotal for i in items), 2)
         total_shipping = round(sum(i.shipping_cost for i in items), 2)
         grand_total = round(total_product + total_shipping, 2)
 
@@ -146,6 +147,7 @@ class SplitOrderOptimizer:
         """Find the best single merchant to fulfil all items."""
         # Group available products by merchant
         merchant_items: dict[str, list[tuple[str, ProductResult]]] = defaultdict(list)
+        quantities = {entry.product_query: entry.quantity for entry in matrix.entries}
 
         for entry in matrix.entries:
             for result in entry.merchant_results:
@@ -167,7 +169,7 @@ class SplitOrderOptimizer:
                 continue
 
             items: list[SplitOrderItem] = []
-            for product in item_map.values():
+            for item_query, product in item_map.items():
                 shipping = self._cheapest_shipping_cost(product)
                 items.append(
                     SplitOrderItem(
@@ -177,11 +179,12 @@ class SplitOrderOptimizer:
                         merchant_id=product.merchant_id,
                         merchant_url=self._get_merchant_url(product),
                         price=product.price,
+                        quantity=quantities[item_query],
                         shipping_cost=shipping,
                     )
                 )
 
-            total_product = round(sum(i.price for i in items), 2)
+            total_product = round(sum(i.subtotal for i in items), 2)
             total_shipping = round(sum(i.shipping_cost for i in items), 2)
             grand_total = round(total_product + total_shipping, 2)
 
@@ -226,7 +229,7 @@ class SplitOrderOptimizer:
         # Group items by merchant and compute subtotals
         merchant_subtotals: dict[str, float] = defaultdict(float)
         for item in items:
-            merchant_subtotals[item.merchant_id] += item.price
+            merchant_subtotals[item.merchant_id] += item.subtotal
 
         # Check thresholds (stored in metadata on comparison results)
         # For now, use a heuristic: free shipping if subtotal >= 100
@@ -239,7 +242,7 @@ class SplitOrderOptimizer:
                     item.model_copy(
                         update={
                             "shipping_cost": 0.0,
-                            "total": round(item.price, 2),
+                            "total": item.subtotal,
                         }
                     )
                 )

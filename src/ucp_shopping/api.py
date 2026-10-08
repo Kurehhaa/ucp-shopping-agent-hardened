@@ -34,6 +34,7 @@ from ucp_shopping.config import Settings
 from ucp_shopping.models import (
     MerchantInfo,
     OrderSummary,
+    ShippingAddress,
     ShoppingPreferences,
     ShoppingRequest,
     ShoppingSession,
@@ -57,6 +58,7 @@ class ShopRequest(BaseModel):
 
     query: str
     budget: float | None = None
+    shipping_address: ShippingAddress | None = None
     preferences: ShoppingPreferences = Field(default_factory=ShoppingPreferences)
 
 
@@ -214,6 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         shopping_req = ShoppingRequest(
             query=req.query,
             budget=budget,
+            shipping_address=req.shipping_address,
             preferences=req.preferences,
         )
         session = await state.session_manager.create_session(shopping_req)

@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import re
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
 from ucp_shopping.config import Settings
-from ucp_shopping.models import ShoppingPlan, ShoppingPlanItem, ShoppingPreferences
+from ucp_shopping.models import MAX_QUANTITY, ShoppingPlan, ShoppingPlanItem, ShoppingPreferences
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,7 @@ Return ONLY valid JSON with the following schema (no markdown fences):
   "items": [
     {
       "name": "<product name>",
+      "quantity": <integer >= 1, default 1>,
       "keywords": ["keyword1", "keyword2"],
       "budget": <number or null>,
       "brand_preference": "<brand or null>",
@@ -44,11 +46,35 @@ Return ONLY valid JSON with the following schema (no markdown fences):
 
 Rules:
 - Extract every distinct product the user wants.
+- quantity is how many units of that product the user wants (1 if not stated).
 - Separate budget from preferences.
 - If the user mentions a brand, capture it in brand_preference.
 - keywords should be search-engine-friendly terms for the product.
 - If no budget is stated, set budget fields to null.
 """
+
+
+def _safe_quantity(value: Any) -> int:
+    """Turn an LLM-provided quantity into a valid integer in 1..MAX_QUANTITY."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+    return max(1, min(number, MAX_QUANTITY))
+
+
+_QUANTITY_PREFIX = re.compile(r"^(\d{1,2})\s*(?:x|\u00d7|pcs|pieces|units)\s+", re.IGNORECASE)
+
+
+def _split_quantity(fragment: str) -> tuple[int, str]:
+    """Read an explicit quantity such as "2x keyboard" or "3 pcs usb hub".
+
+    A bare number is never treated as a quantity ("27 inch monitor").
+    """
+    match = _QUANTITY_PREFIX.match(fragment)
+    if not match:
+        return 1, fragment
+    return _safe_quantity(match.group(1)), fragment[match.end() :].strip() or fragment
 
 
 class ShoppingPlanner:
@@ -161,6 +187,7 @@ class ShoppingPlanner:
             items.append(
                 ShoppingPlanItem(
                     name=item_data.get("name", ""),
+                    quantity=_safe_quantity(item_data.get("quantity")),
                     keywords=item_data.get("keywords", []),
                     budget=Decimal(str(budget_val)) if budget_val is not None else None,
                     brand_preference=item_data.get("brand_preference"),
@@ -214,10 +241,12 @@ class ShoppingPlanner:
             frag = frag.strip()
             if not frag or len(frag) < 3:
                 continue
+            quantity, frag = _split_quantity(frag)
             keywords = [w.lower() for w in frag.split() if len(w) > 2]
             items.append(
                 ShoppingPlanItem(
                     name=frag,
+                    quantity=quantity,
                     keywords=keywords,
                 )
             )

@@ -16,6 +16,7 @@ from ucp_shopping.config import Settings
 from ucp_shopping.models import (
     MerchantInfo,
     OrderSummary,
+    ShippingAddress,
     SplitOrderItem,
     SplitOrderPlan,
 )
@@ -23,6 +24,16 @@ from ucp_shopping.protocols.ucp_client import UCPClient, UCPClientError
 from ucp_shopping.streaming import EVENT_CHECKOUT_PROGRESS, ShoppingEventStream
 
 logger = structlog.get_logger(__name__)
+
+# Used only when the caller supplies no address (demo / smoke tests).
+DEMO_ADDRESS = ShippingAddress(
+    full_name="Demo User",
+    line1="123 AI Street",
+    city="San Francisco",
+    state="CA",
+    postal_code="94105",
+    country="US",
+)
 
 
 class CheckoutAgent:
@@ -38,6 +49,7 @@ class CheckoutAgent:
         merchants: dict[str, MerchantInfo],
         stream: ShoppingEventStream | None = None,
         session_id: str = "",
+        shipping_address: ShippingAddress | None = None,
     ) -> list[OrderSummary]:
         """Execute checkouts at all merchants in the plan.
 
@@ -55,12 +67,19 @@ class CheckoutAgent:
             Optional SSE stream for progress events.
         session_id:
             Shopping session ID for SSE events.
+        shipping_address:
+            Delivery address from the request; a demo address is used (and
+            logged) when it is missing.
 
         Returns
         -------
         list[OrderSummary]
             Completed orders.
         """
+        if shipping_address is None:
+            logger.warning("checkout_using_demo_address")
+            shipping_address = DEMO_ADDRESS
+
         # Group items by merchant
         merchant_items: dict[str, list[SplitOrderItem]] = defaultdict(list)
         for item in plan.items:
@@ -83,6 +102,7 @@ class CheckoutAgent:
                     items=items,
                     stream=stream,
                     session_id=session_id,
+                    shipping_address=shipping_address,
                 )
             )
             tasks.append(task)
@@ -110,6 +130,7 @@ class CheckoutAgent:
         items: list[SplitOrderItem],
         stream: ShoppingEventStream | None = None,
         session_id: str = "",
+        shipping_address: ShippingAddress = DEMO_ADDRESS,
     ) -> OrderSummary | None:
         """Execute the full checkout lifecycle for one merchant.
 
@@ -126,7 +147,7 @@ class CheckoutAgent:
             line_items = [
                 {
                     "product_id": item.product_id,
-                    "quantity": 1,
+                    "quantity": item.quantity,
                 }
                 for item in items
             ]
@@ -155,14 +176,7 @@ class CheckoutAgent:
                 merchant_url,
                 checkout_session_id,
                 {
-                    "shipping_address": {
-                        "full_name": "Demo User",
-                        "line1": "123 AI Street",
-                        "city": "San Francisco",
-                        "state": "CA",
-                        "postal_code": "94105",
-                        "country": "US",
-                    },
+                    "shipping_address": shipping_address.model_dump(exclude_none=True),
                     "selected_shipping_id": "standard",
                 },
             )
@@ -179,7 +193,7 @@ class CheckoutAgent:
             completion = await self._ucp_client.complete_checkout(merchant_url, checkout_session_id)
 
             order_id = completion.get("order_id", completion.get("id", checkout_session_id))
-            total = sum(i.total for i in items)
+            total = sum(i.total for i in items)  # unit price x quantity + shipping
 
             order = OrderSummary(
                 merchant_name=merchant.name,

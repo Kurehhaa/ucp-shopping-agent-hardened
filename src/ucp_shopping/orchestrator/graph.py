@@ -219,7 +219,8 @@ def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream)
         )
 
         try:
-            matrix = await comparison.build_comparison(search_results, item_names)
+            quantities = {item.name: item.quantity for item in (plan.items if plan else [])}
+            matrix = await comparison.build_comparison(search_results, item_names, quantities)
             await stream.emit(
                 session_id,
                 EVENT_COMPARISON_READY,
@@ -364,7 +365,14 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
 
         try:
             merchants_map = {m.id: m for m in merchants}
-            orders = await checkout_agent.execute_checkouts(plan, merchants_map, stream, session_id)
+            request = state.get("request")
+            orders = await checkout_agent.execute_checkouts(
+                plan,
+                merchants_map,
+                stream,
+                session_id,
+                shipping_address=request.shipping_address if request else None,
+            )
             return {
                 **state,
                 "completed_orders": orders,

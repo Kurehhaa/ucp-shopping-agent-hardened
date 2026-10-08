@@ -32,6 +32,7 @@ class ComparisonAgent:
         self,
         search_results: dict[str, list[ProductResult]],
         item_names: list[str],
+        quantities: dict[str, int] | None = None,
     ) -> ComparisonMatrix:
         """Create a comparison matrix for the requested items.
 
@@ -45,6 +46,8 @@ class ComparisonAgent:
             Mapping of merchant_id -> list of products.
         item_names:
             The item names from the shopping plan.
+        quantities:
+            Optional mapping of item name -> units wanted (default 1 each).
 
         Returns
         -------
@@ -65,6 +68,7 @@ class ComparisonAgent:
                 entries.append(
                     ComparisonEntry(
                         product_query=item_name,
+                        quantity=(quantities or {}).get(item_name, 1),
                         merchant_results=[],
                     )
                 )
@@ -95,6 +99,7 @@ class ComparisonAgent:
             entries.append(
                 ComparisonEntry(
                     product_query=item_name,
+                    quantity=(quantities or {}).get(item_name, 1),
                     merchant_results=scored,
                     best_price=best_price,
                     best_shipping=best_shipping,

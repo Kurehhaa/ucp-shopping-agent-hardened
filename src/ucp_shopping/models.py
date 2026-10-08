@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
+# Upper bound for units of one product in a single order
+MAX_QUANTITY = 99
+
+
 class ShoppingPreferences(BaseModel):
     """User preferences that influence search, comparison, and optimization."""
 
@@ -30,11 +34,24 @@ class ShoppingPreferences(BaseModel):
     min_rating: float | None = None
 
 
+class ShippingAddress(BaseModel):
+    """Where the order should be delivered."""
+
+    full_name: str = Field(min_length=1, max_length=200)
+    line1: str = Field(min_length=1, max_length=200)
+    line2: str | None = Field(default=None, max_length=200)
+    city: str = Field(min_length=1, max_length=100)
+    state: str = Field(default="", max_length=100)
+    postal_code: str = Field(min_length=1, max_length=20)
+    country: str = Field(min_length=2, max_length=2, description="ISO 3166-1 alpha-2 code")
+
+
 class ShoppingRequest(BaseModel):
     """Top-level shopping request submitted by a user or agent."""
 
     query: str
     budget: Decimal | None = None
+    shipping_address: ShippingAddress | None = None
     preferences: ShoppingPreferences = Field(default_factory=ShoppingPreferences)
 
 
@@ -140,6 +157,7 @@ class ComparisonEntry(BaseModel):
     """Comparison of a single product query across merchants."""
 
     product_query: str
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     merchant_results: list[ProductResult] = Field(default_factory=list)
     best_price: ProductResult | None = None
     best_shipping: ProductResult | None = None
@@ -168,14 +186,20 @@ class SplitOrderItem(BaseModel):
     merchant_name: str
     merchant_id: str
     merchant_url: str = ""
-    price: float
+    price: float = Field(description="Unit price")
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     shipping_cost: float
     total: float = 0.0
 
+    @property
+    def subtotal(self) -> float:
+        """Unit price times quantity, without shipping."""
+        return round(self.price * self.quantity, 2)
+
     def model_post_init(self, __context: Any) -> None:
-        """Compute item total if not provided."""
+        """Compute item total (price x quantity + shipping) if not provided."""
         if self.total == 0.0:
-            self.total = round(self.price + self.shipping_cost, 2)
+            self.total = round(self.subtotal + self.shipping_cost, 2)
 
 
 class SplitOrderPlan(BaseModel):
@@ -265,6 +289,7 @@ class ShoppingPlanItem(BaseModel):
     """A single item the planner extracted from the user query."""
 
     name: str
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     keywords: list[str] = Field(default_factory=list)
     budget: Decimal | None = None
     brand_preference: str | None = None
