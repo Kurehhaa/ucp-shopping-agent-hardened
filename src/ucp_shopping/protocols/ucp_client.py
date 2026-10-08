@@ -73,7 +73,8 @@ class UCPClient:
                     params=params,
                 )
                 response.raise_for_status()
-                return response.json()
+                data: dict[str, Any] = response.json()
+                return data
             except httpx.TimeoutException as exc:
                 last_error = exc
                 logger.warning(
@@ -127,12 +128,8 @@ class UCPClient:
         url = f"{merchant_url.rstrip('/')}/.well-known/ucp"
         data = await self._request("GET", url)
 
-        capabilities = [
-            cap.get("id", "") for cap in data.get("capabilities", [])
-        ]
-        extensions = [
-            ext.get("id", "") for ext in data.get("extensions", [])
-        ]
+        capabilities = [cap.get("id", "") for cap in data.get("capabilities", [])]
+        extensions = [ext.get("id", "") for ext in data.get("extensions", [])]
         endpoints = data.get("endpoints", {})
 
         # Detect free-shipping threshold from metadata

@@ -14,7 +14,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Shopping preferences and requests
 # ---------------------------------------------------------------------------
@@ -245,7 +244,7 @@ class MCPToolDefinition(BaseModel):
 
     name: str
     description: str
-    inputSchema: dict[str, Any]  # noqa: N815
+    inputSchema: dict[str, Any]
 
 
 class MCPToolResult(BaseModel):

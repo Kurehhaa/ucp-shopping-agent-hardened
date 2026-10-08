@@ -3,8 +3,8 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from ucp_shopping.main import build_app
 from ucp_shopping.config import Settings
+from ucp_shopping.main import build_app
 
 
 @pytest.fixture
@@ -106,13 +106,15 @@ class TestMockMerchants:
         # Update with address
         resp = await client.put(
             f"/merchants/techzone/api/v1/checkout/sessions/{session_id}",
-            json={"shipping_address": {
-                "line1": "123 Main St",
-                "city": "SF",
-                "state": "CA",
-                "postal_code": "94105",
-                "country": "US",
-            }},
+            json={
+                "shipping_address": {
+                    "line1": "123 Main St",
+                    "city": "SF",
+                    "state": "CA",
+                    "postal_code": "94105",
+                    "country": "US",
+                }
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["state"] == "ready_for_complete"
@@ -139,9 +141,9 @@ class TestMerchantDiscovery:
         assert "total" in data
 
     async def test_discover_merchants(self, client):
-        resp = await client.post("/api/v1/merchants/discover", json={
-            "urls": ["http://test/merchants/techzone"]
-        })
+        resp = await client.post(
+            "/api/v1/merchants/discover", json={"urls": ["http://test/merchants/techzone"]}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "discovered" in data
@@ -149,9 +151,12 @@ class TestMerchantDiscovery:
 
 class TestShopping:
     async def test_submit_shopping_request(self, client):
-        resp = await client.post("/api/v1/shop", json={
-            "query": "Find me a mechanical keyboard under $100",
-        })
+        resp = await client.post(
+            "/api/v1/shop",
+            json={
+                "query": "Find me a mechanical keyboard under $100",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "session_id" in data
@@ -159,18 +164,24 @@ class TestShopping:
         assert "stream_url" in data
 
     async def test_get_shopping_session(self, client):
-        create_resp = await client.post("/api/v1/shop", json={
-            "query": "laptop",
-        })
+        create_resp = await client.post(
+            "/api/v1/shop",
+            json={
+                "query": "laptop",
+            },
+        )
         session_id = create_resp.json()["session_id"]
         resp = await client.get(f"/api/v1/shop/{session_id}")
         assert resp.status_code == 200
         assert resp.json()["id"] == session_id
 
     async def test_cancel_shopping(self, client):
-        create_resp = await client.post("/api/v1/shop", json={
-            "query": "mouse",
-        })
+        create_resp = await client.post(
+            "/api/v1/shop",
+            json={
+                "query": "mouse",
+            },
+        )
         session_id = create_resp.json()["session_id"]
         resp = await client.post(f"/api/v1/shop/{session_id}/cancel")
         assert resp.status_code == 200
@@ -210,9 +221,9 @@ class TestMCPTools:
         assert "get_shopping_status" in tool_names
 
     async def test_execute_shop_tool(self, client):
-        resp = await client.post("/api/v1/mcp/tools/shop/execute", json={
-            "arguments": {"query": "keyboard"}
-        })
+        resp = await client.post(
+            "/api/v1/mcp/tools/shop/execute", json={"arguments": {"query": "keyboard"}}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
@@ -220,9 +231,7 @@ class TestMCPTools:
         assert "session_id" in data["result"]
 
     async def test_execute_unknown_tool(self, client):
-        resp = await client.post("/api/v1/mcp/tools/nonexistent/execute", json={
-            "arguments": {}
-        })
+        resp = await client.post("/api/v1/mcp/tools/nonexistent/execute", json={"arguments": {}})
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is False

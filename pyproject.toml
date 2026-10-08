@@ -34,7 +34,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "TCH", "RUF"]
-ignore = ["E501"]
+ignore = ["E501", "TC001", "TC002", "TC003", "UP042"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["ucp_shopping"]
@@ -54,3 +54,13 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests requiring external services",
 ]
+
+[[tool.mypy.overrides]]
+module = ["openai"]
+ignore_missing_imports = true
+
+# LangGraph's add_node overloads are stricter than the node functions' annotations
+# (they accept any async callable at runtime), so silence only that error code here.
+[[tool.mypy.overrides]]
+module = "ucp_shopping.orchestrator.graph"
+disable_error_code = ["call-overload"]

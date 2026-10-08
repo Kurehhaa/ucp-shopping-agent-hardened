@@ -77,9 +77,7 @@ class SplitOrderOptimizer:
                 continue
 
             # Filter by preferences
-            candidates = self._apply_preference_filters(
-                entry.merchant_results, prefs
-            )
+            candidates = self._apply_preference_filters(entry.merchant_results, prefs)
             if not candidates:
                 candidates = entry.merchant_results
 
@@ -151,15 +149,13 @@ class SplitOrderOptimizer:
 
         for entry in matrix.entries:
             for result in entry.merchant_results:
-                merchant_items[result.merchant_id].append(
-                    (entry.product_query, result)
-                )
+                merchant_items[result.merchant_id].append((entry.product_query, result))
 
         # Evaluate each merchant that can fulfil all items
         num_items = len(matrix.entries)
         best_plan: SplitOrderPlan | None = None
 
-        for merchant_id, available in merchant_items.items():
+        for available in merchant_items.values():
             # Pick cheapest option per item from this merchant
             item_map: dict[str, ProductResult] = {}
             for item_query, product in available:
@@ -171,7 +167,7 @@ class SplitOrderOptimizer:
                 continue
 
             items: list[SplitOrderItem] = []
-            for item_query, product in item_map.items():
+            for product in item_map.values():
                 shipping = self._cheapest_shipping_cost(product)
                 items.append(
                     SplitOrderItem(
@@ -270,8 +266,7 @@ class SplitOrderOptimizer:
                 p
                 for p in filtered
                 if any(
-                    so.estimated_days_max <= prefs.max_shipping_days
-                    for so in p.shipping_options
+                    so.estimated_days_max <= prefs.max_shipping_days for so in p.shipping_options
                 )
                 or not p.shipping_options
             ]
@@ -279,9 +274,7 @@ class SplitOrderOptimizer:
         # Filter by free shipping preference
         if prefs.prefer_free_shipping:
             free_options = [
-                p
-                for p in filtered
-                if any(so.is_free or so.price == 0 for so in p.shipping_options)
+                p for p in filtered if any(so.is_free or so.price == 0 for so in p.shipping_options)
             ]
             if free_options:
                 filtered = free_options
@@ -289,9 +282,7 @@ class SplitOrderOptimizer:
         # Filter by preferred brands
         if prefs.preferred_brands:
             brand_lower = {b.lower() for b in prefs.preferred_brands}
-            brand_matches = [
-                p for p in filtered if p.brand.lower() in brand_lower
-            ]
+            brand_matches = [p for p in filtered if p.brand.lower() in brand_lower]
             if brand_matches:
                 filtered = brand_matches
 

@@ -26,6 +26,9 @@ checkout -> complete
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import structlog
 from langgraph.graph import END, StateGraph
 
@@ -46,13 +49,15 @@ from ucp_shopping.streaming import (
     EVENT_COMPLETED,
     EVENT_ERROR,
     EVENT_MERCHANTS_DISCOVERED,
-    EVENT_OPTIMIZING,
     EVENT_OPTIMIZATION_READY,
+    EVENT_OPTIMIZING,
     EVENT_PLANNING,
     EVENT_PRODUCTS_FOUND,
     EVENT_SEARCHING,
     ShoppingEventStream,
 )
+
+NodeFn = Callable[[ShoppingGraphState], Any]
 
 logger = structlog.get_logger(__name__)
 
@@ -62,7 +67,7 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _make_plan_node(planner: ShoppingPlanner, stream: ShoppingEventStream):
+def _make_plan_node(planner: ShoppingPlanner, stream: ShoppingEventStream) -> NodeFn:
     """Create the *plan* node function."""
 
     async def plan_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -86,8 +91,10 @@ def _make_plan_node(planner: ShoppingPlanner, stream: ShoppingEventStream):
                 "shopping_plan": plan,
                 "current_state": ShoppingSessionState.DISCOVERING,
                 "error": None,
-                "messages": state.get("messages", [])
-                + [{"role": "system", "content": f"Plan: {plan.reasoning}"}],
+                "messages": [
+                    *state.get("messages", []),
+                    {"role": "system", "content": f"Plan: {plan.reasoning}"},
+                ],
             }
         except Exception as exc:
             logger.exception("plan_node_error")
@@ -97,7 +104,7 @@ def _make_plan_node(planner: ShoppingPlanner, stream: ShoppingEventStream):
     return plan_node
 
 
-def _make_discover_node(discovery: DiscoveryAgent, stream: ShoppingEventStream):
+def _make_discover_node(discovery: DiscoveryAgent, stream: ShoppingEventStream) -> NodeFn:
     """Create the *discover* node function."""
 
     async def discover_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -120,9 +127,7 @@ def _make_discover_node(discovery: DiscoveryAgent, stream: ShoppingEventStream):
                 "discovered_merchants": merchants,
                 "failed_merchants": failed,
                 "current_state": (
-                    ShoppingSessionState.SEARCHING
-                    if merchants
-                    else ShoppingSessionState.FAILED
+                    ShoppingSessionState.SEARCHING if merchants else ShoppingSessionState.FAILED
                 ),
                 "error": None if merchants else "No merchants discovered.",
             }
@@ -139,7 +144,7 @@ def _make_discover_node(discovery: DiscoveryAgent, stream: ShoppingEventStream):
     return discover_node
 
 
-def _make_search_node(search_agent: SearchAgent, stream: ShoppingEventStream):
+def _make_search_node(search_agent: SearchAgent, stream: ShoppingEventStream) -> NodeFn:
     """Create the *search* node function."""
 
     async def search_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -176,7 +181,10 @@ def _make_search_node(search_agent: SearchAgent, stream: ShoppingEventStream):
             await stream.emit(
                 session_id,
                 EVENT_PRODUCTS_FOUND,
-                data={"total_products": total_products, "per_merchant": {k: len(v) for k, v in results.items()}},
+                data={
+                    "total_products": total_products,
+                    "per_merchant": {k: len(v) for k, v in results.items()},
+                },
                 message=f"Found {total_products} product(s) across {len(results)} merchant(s).",
             )
             return {
@@ -194,7 +202,7 @@ def _make_search_node(search_agent: SearchAgent, stream: ShoppingEventStream):
     return search_node
 
 
-def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream):
+def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream) -> NodeFn:
     """Create the *compare* node function."""
 
     async def compare_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -235,7 +243,7 @@ def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream)
     return compare_node
 
 
-def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStream):
+def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStream) -> NodeFn:
     """Create the *optimize* node function."""
 
     async def optimize_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -282,7 +290,7 @@ def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStr
     return optimize_node
 
 
-def _make_present_node(stream: ShoppingEventStream):
+def _make_present_node(stream: ShoppingEventStream) -> NodeFn:
     """Create the *present* node -- prepares the summary for the user."""
 
     async def present_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -298,9 +306,7 @@ def _make_present_node(stream: ShoppingEventStream):
                     f"${item.price:.2f} + ${item.shipping_cost:.2f} shipping"
                 )
             if plan.savings_vs_single > 0:
-                summary_lines.append(
-                    f"  Savings vs single merchant: ${plan.savings_vs_single:.2f}"
-                )
+                summary_lines.append(f"  Savings vs single merchant: ${plan.savings_vs_single:.2f}")
 
         await stream.emit(
             session_id,
@@ -316,7 +322,7 @@ def _make_present_node(stream: ShoppingEventStream):
     return present_node
 
 
-def _make_wait_node(stream: ShoppingEventStream):
+def _make_wait_node(stream: ShoppingEventStream) -> NodeFn:
     """Create the *wait_for_confirmation* node.
 
     In a real system this would block until the user confirms.  Here we
@@ -339,7 +345,7 @@ def _make_wait_node(stream: ShoppingEventStream):
     return wait_node
 
 
-def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStream):
+def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStream) -> NodeFn:
     """Create the *checkout* node function."""
 
     async def checkout_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -373,7 +379,7 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
     return checkout_node
 
 
-def _make_complete_node(stream: ShoppingEventStream):
+def _make_complete_node(stream: ShoppingEventStream) -> NodeFn:
     """Create the *complete* node -- emits the final completion event."""
 
     async def complete_node(state: ShoppingGraphState) -> ShoppingGraphState:
@@ -520,7 +526,7 @@ def build_shopping_graph(
 def compile_shopping_graph(
     settings: Settings,
     stream: ShoppingEventStream,
-):
+) -> Any:
     """Build and compile the shopping graph into a runnable."""
     graph = build_shopping_graph(settings, stream)
     return graph.compile()

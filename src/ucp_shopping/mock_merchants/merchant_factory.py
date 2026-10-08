@@ -10,8 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
-
 from ucp_shopping.mock_merchants.merchant_app import MockMerchantApp
 
 _CATALOG_DIR = Path(__file__).parent / "catalogs"

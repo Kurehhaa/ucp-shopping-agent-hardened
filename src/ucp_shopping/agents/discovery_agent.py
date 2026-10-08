@@ -49,7 +49,7 @@ class DiscoveryAgent:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         merchants: list[MerchantInfo] = []
-        for url, result in zip(target_urls, results):
+        for url, result in zip(target_urls, results, strict=True):
             if isinstance(result, MerchantInfo):
                 merchants.append(result)
             else:
@@ -89,7 +89,7 @@ class DiscoveryAgent:
         merchants: list[MerchantInfo] = []
         failed: list[str] = []
 
-        for url, result in zip(target_urls, results):
+        for url, result in zip(target_urls, results, strict=True):
             if isinstance(result, MerchantInfo):
                 merchants.append(result)
             else:

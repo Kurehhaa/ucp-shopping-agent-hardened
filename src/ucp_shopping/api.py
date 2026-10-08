@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -26,21 +26,18 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from common import ErrorResponse, HealthResponse
-
 from ucp_shopping.agents.comparison_agent import ComparisonAgent
 from ucp_shopping.agents.discovery_agent import DiscoveryAgent
 from ucp_shopping.agents.optimizer import SplitOrderOptimizer
 from ucp_shopping.agents.search_agent import SearchAgent
 from ucp_shopping.config import Settings
 from ucp_shopping.models import (
-    ComparisonMatrix,
     MerchantInfo,
     OrderSummary,
     ShoppingPreferences,
     ShoppingRequest,
     ShoppingSession,
     ShoppingSessionState,
-    SplitOrderPlan,
 )
 from ucp_shopping.orchestrator.graph import compile_shopping_graph
 from ucp_shopping.orchestrator.state import ShoppingGraphState
@@ -107,8 +104,8 @@ class SessionManager:
             id=session_id,
             request=request,
             state=ShoppingSessionState.PLANNING,
-            created_at=datetime.now(tz=timezone.utc),
-            updated_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
         )
         self._sessions[session_id] = session
         return session
@@ -129,7 +126,7 @@ class SessionManager:
         for key, value in kwargs.items():
             if hasattr(session, key):
                 setattr(session, key, value)
-        session.updated_at = datetime.now(tz=timezone.utc)
+        session.updated_at = datetime.now(tz=UTC)
         return session
 
     def list_sessions(self) -> list[ShoppingSession]:
@@ -279,9 +276,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result = await compiled.ainvoke(result)
 
                 # Persist final state
-                final_state = result.get(
-                    "current_state", ShoppingSessionState.COMPLETED
-                )
+                final_state = result.get("current_state", ShoppingSessionState.COMPLETED)
                 orders = result.get("completed_orders", [])
                 state.session_manager.update_session(
                     session.id,
@@ -386,9 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         merchants = await discovery.discover_merchants()
 
         search_agent = SearchAgent(settings)
-        results = await search_agent.search_all_merchants(
-            merchants, [req.product_query]
-        )
+        results = await search_agent.search_all_merchants(merchants, [req.product_query])
 
         comparison = ComparisonAgent()
         matrix = await comparison.build_comparison(results, [req.product_query])
@@ -407,12 +400,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         optimizer = SplitOrderOptimizer()
-        plan = await optimizer.optimize(
-            session.comparison, session.request.preferences
-        )
-        state.session_manager.update_session(
-            req.session_id, optimization_plan=plan
-        )
+        plan = await optimizer.optimize(session.comparison, session.request.preferences)
+        state.session_manager.update_session(req.session_id, optimization_plan=plan)
         return plan.model_dump()
 
     # -------------------------------------------------------------------
@@ -457,14 +446,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Browse a specific merchant's product catalog."""
         merchant = state.merchants.get(merchant_id)
         if merchant is None:
-            raise HTTPException(
-                status_code=404, detail=f"Merchant {merchant_id} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
 
         search_agent = SearchAgent(settings)
-        results = await search_agent.search_all_merchants(
-            [merchant], [q or ""], filters=None
-        )
+        results = await search_agent.search_all_merchants([merchant], [q or ""], filters=None)
 
         products = results.get(merchant_id, [])
         return {
@@ -505,9 +490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"tools": tools, "total": len(tools)}
 
     @app.post("/api/v1/mcp/tools/{tool_name}/execute", tags=["mcp"])
-    async def mcp_execute_tool(
-        tool_name: str, req: ToolExecuteRequest
-    ) -> dict[str, Any]:
+    async def mcp_execute_tool(tool_name: str, req: ToolExecuteRequest) -> dict[str, Any]:
         """Execute an MCP tool by name."""
         result = await mcp_handler.execute(tool_name, req.arguments)
         return result.model_dump()
@@ -517,12 +500,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # -------------------------------------------------------------------
 
     @app.exception_handler(Exception)
-    async def generic_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        logger.error(
-            "unhandled_exception", error=str(exc), path=request.url.path
-        )
+    async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.error("unhandled_exception", error=str(exc), path=request.url.path)
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(

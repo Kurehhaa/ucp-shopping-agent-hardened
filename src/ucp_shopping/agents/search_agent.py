@@ -54,9 +54,7 @@ class SearchAgent:
 
         for merchant in merchants:
             for query in queries:
-                task = asyncio.create_task(
-                    self._search_one_merchant(merchant, query, filters)
-                )
+                task = asyncio.create_task(self._search_one_merchant(merchant, query, filters))
                 tasks.append(task)
 
         results_tuples = await asyncio.gather(*tasks, return_exceptions=True)
@@ -64,7 +62,7 @@ class SearchAgent:
         # Aggregate results by merchant
         merchant_results: dict[str, list[ProductResult]] = {}
         for result in results_tuples:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("search_task_failed", error=str(result))
                 continue
             merchant_id, products = result
@@ -74,9 +72,7 @@ class SearchAgent:
 
         # Deduplicate within each merchant
         for merchant_id in merchant_results:
-            merchant_results[merchant_id] = self._deduplicate(
-                merchant_results[merchant_id]
-            )
+            merchant_results[merchant_id] = self._deduplicate(merchant_results[merchant_id])
 
         logger.info(
             "search_complete",
