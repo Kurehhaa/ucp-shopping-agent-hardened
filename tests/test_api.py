@@ -13,6 +13,7 @@ def settings():
         environment="testing",
         openai_api_key="test-key",
         human_confirmation_required=False,
+        admin_api_key="test-admin-key",
     )
 
 
@@ -142,7 +143,9 @@ class TestMerchantDiscovery:
 
     async def test_discover_merchants(self, client):
         resp = await client.post(
-            "/api/v1/merchants/discover", json={"urls": ["http://test/merchants/techzone"]}
+            "/api/v1/merchants/discover",
+            json={"urls": ["http://test/merchants/techzone"]},
+            headers={"X-API-Key": "test-admin-key"},
         )
         assert resp.status_code == 200
         data = resp.json()

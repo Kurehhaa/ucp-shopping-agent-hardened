@@ -74,7 +74,9 @@ class CheckoutAgent:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._ucp_client = UCPClient(timeout=settings.checkout_timeout)
+        self._ucp_client = UCPClient(
+            timeout=settings.checkout_timeout, guard=settings.merchant_url_guard()
+        )
 
     async def execute_checkouts(
         self,

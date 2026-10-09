@@ -12,6 +12,7 @@ import httpx
 import structlog
 
 from ucp_shopping.models import MerchantInfo, ProductResult, ShippingOption
+from ucp_shopping.security import MerchantURLError, MerchantURLGuard
 
 logger = structlog.get_logger(__name__)
 
@@ -34,17 +35,19 @@ class UCPClient:
         self,
         timeout: float = _DEFAULT_TIMEOUT,
         max_retries: int = _MAX_RETRIES,
+        guard: MerchantURLGuard | None = None,
     ) -> None:
         self._timeout = timeout
         self._max_retries = max_retries
         self._client: httpx.AsyncClient | None = None
+        self._guard = guard
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Lazy-initialise the shared ``httpx.AsyncClient``."""
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout),
-                follow_redirects=True,
+                follow_redirects=False,  # a redirect could point at an internal address
             )
         return self._client
 
@@ -73,6 +76,12 @@ class UCPClient:
         client = await self._get_client()
         last_error: Exception | None = None
 
+        if self._guard is not None:
+            try:
+                await self._guard.check(url)
+            except MerchantURLError as exc:
+                raise UCPClientError(f"Request blocked: {exc}") from exc
+
         for attempt in range(self._max_retries + 1):
             try:
                 response = await client.request(
@@ -96,7 +105,8 @@ class UCPClient:
                 # Don't retry 4xx errors
                 if 400 <= exc.response.status_code < 500:
                     raise UCPClientError(
-                        f"UCP request failed ({exc.response.status_code}): {exc.response.text}"
+                        f"UCP request failed ({exc.response.status_code}): "
+                        f"{exc.response.text[:200]}"
                     ) from exc
                 last_error = exc
                 logger.warning(
