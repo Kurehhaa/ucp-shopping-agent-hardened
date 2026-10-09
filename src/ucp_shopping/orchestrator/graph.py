@@ -318,6 +318,18 @@ def _make_present_node(stream: ShoppingEventStream) -> NodeFn:
         session_id = state.get("session_id", "")
         plan = state.get("optimization_plan")
 
+        if plan is None or not plan.items:
+            reasons = [state.get("error")] if state.get("error") else []
+            if plan is not None and plan.unavailable_items:
+                reasons.append("Not available: " + ", ".join(plan.unavailable_items))
+            message = "Nothing to order. " + " ".join(str(r) for r in reasons)
+            await stream.emit(session_id, EVENT_ERROR, message=message.strip())
+            return {
+                **state,
+                "current_state": ShoppingSessionState.FAILED,
+                "error": message.strip(),
+            }
+
         summary_lines: list[str] = []
         if plan:
             summary_lines.append(f"Total: ${plan.grand_total:.2f}")
@@ -506,11 +518,31 @@ def _after_compare(state: ShoppingGraphState) -> str:
     return "optimize"  # Always optimize even for single items for consistency
 
 
+def _entry(state: ShoppingGraphState) -> str:
+    """Pick the entry node.
+
+    A confirmed session is resumed at checkout; re-running it from the start
+    would plan, search and compare all over again.
+    """
+    return "checkout" if state.get("user_confirmed", False) else "plan"
+
+
+def _after_present(state: ShoppingGraphState) -> str:
+    """Stop early when there is nothing to confirm."""
+    if state.get("current_state") == ShoppingSessionState.FAILED:
+        return "fail"
+    return "wait"
+
+
 def _after_wait(state: ShoppingGraphState) -> str:
-    """Route after human confirmation gate."""
+    """Route after the confirmation gate.
+
+    Without confirmation the graph pauses (ends the run, state stays
+    AWAITING_CONFIRMATION); the API resumes it with ``user_confirmed`` set.
+    """
     if state.get("user_confirmed", False):
         return "checkout"
-    return "fail"
+    return "pause"
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +592,7 @@ def build_shopping_graph(
     graph.add_node("fail", _fail_node)
 
     # Entry point
-    graph.set_entry_point("plan")
+    graph.set_conditional_entry_point(_entry, {"plan": "plan", "checkout": "checkout"})
 
     # Edges
     graph.add_edge("plan", "discover")
@@ -580,12 +612,16 @@ def build_shopping_graph(
     )
 
     graph.add_edge("optimize", "present")
-    graph.add_edge("present", "wait_for_confirmation")
+    graph.add_conditional_edges(
+        "present",
+        _after_present,
+        {"wait": "wait_for_confirmation", "fail": "fail"},
+    )
 
     graph.add_conditional_edges(
         "wait_for_confirmation",
         _after_wait,
-        {"checkout": "checkout", "fail": "fail"},
+        {"checkout": "checkout", "pause": END},
     )
 
     graph.add_edge("checkout", "complete")
