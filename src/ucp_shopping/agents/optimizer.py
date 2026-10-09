@@ -22,6 +22,10 @@ from ucp_shopping.models import (
 logger = structlog.get_logger(__name__)
 
 
+# Used for merchants that do not publish a free-shipping threshold
+DEFAULT_FREE_SHIPPING_THRESHOLD = 100.0
+
+
 class SplitOrderOptimizer:
     """Computes optimal purchase plans across merchants."""
 
@@ -29,6 +33,8 @@ class SplitOrderOptimizer:
         self,
         matrix: ComparisonMatrix,
         preferences: ShoppingPreferences | None = None,
+        budget: float | None = None,
+        free_shipping_thresholds: dict[str, float] | None = None,
     ) -> SplitOrderPlan:
         """Build an optimized split-order plan.
 
@@ -48,17 +54,29 @@ class SplitOrderOptimizer:
             The comparison matrix containing scored options per item.
         preferences:
             User preferences that may override optimisation decisions.
+        budget:
+            Maximum grand total; the plan is flagged ``over_budget`` if exceeded.
+        free_shipping_thresholds:
+            merchant_id -> subtotal from which that merchant ships for free
+            (``DEFAULT_FREE_SHIPPING_THRESHOLD`` for merchants not listed).
 
         Returns
         -------
         SplitOrderPlan
         """
         prefs = preferences or ShoppingPreferences()
+        thresholds = free_shipping_thresholds or {}
 
         if prefs.prefer_single_merchant:
-            return self._optimize_single_merchant(matrix, prefs)
+            plan = self._optimize_single_merchant(matrix, prefs, thresholds)
+        else:
+            plan = self._optimize_split(matrix, prefs, thresholds)
 
-        return self._optimize_split(matrix, prefs)
+        plan.budget = budget
+        plan.over_budget = budget is not None and plan.grand_total > budget
+        if plan.over_budget:
+            plan.reasoning += f" Total ${plan.grand_total:.2f} exceeds the budget of ${budget:.2f}."
+        return plan
 
     # ------------------------------------------------------------------
     # Split-order optimisation
@@ -68,23 +86,27 @@ class SplitOrderOptimizer:
         self,
         matrix: ComparisonMatrix,
         prefs: ShoppingPreferences,
+        thresholds: dict[str, float] | None = None,
     ) -> SplitOrderPlan:
         """Pick the cheapest option per item regardless of merchant."""
         items: list[SplitOrderItem] = []
+        unavailable: list[str] = []
 
         for entry in matrix.entries:
-            if not entry.merchant_results:
+            buyable = [p for p in entry.merchant_results if self._can_supply(p, entry.quantity)]
+            if not buyable:
+                unavailable.append(entry.product_query)
                 continue
 
             # Filter by preferences
-            candidates = self._apply_preference_filters(entry.merchant_results, prefs)
+            candidates = self._apply_preference_filters(buyable, prefs)
             if not candidates:
-                candidates = entry.merchant_results
+                candidates = buyable
 
             # Find cheapest total (price + cheapest shipping)
             best = min(
                 candidates,
-                key=lambda p: p.price + self._cheapest_shipping_cost(p),
+                key=lambda p: p.price * entry.quantity + self._cheapest_shipping_cost(p),
             )
             shipping = self._cheapest_shipping_cost(best)
 
@@ -96,20 +118,22 @@ class SplitOrderOptimizer:
                     merchant_id=best.merchant_id,
                     merchant_url=self._get_merchant_url(best),
                     price=best.price,
+                    quantity=entry.quantity,
                     shipping_cost=shipping,
                 )
             )
 
-        # Apply free-shipping thresholds
-        items = self._apply_free_shipping_thresholds(items, matrix)
+        # One shipping charge per merchant order, then free-shipping thresholds
+        items = self._consolidate_shipping(items)
+        items = self._apply_free_shipping_thresholds(items, matrix, thresholds)
 
         # Calculate totals
-        total_product = round(sum(i.price for i in items), 2)
+        total_product = round(sum(i.subtotal for i in items), 2)
         total_shipping = round(sum(i.shipping_cost for i in items), 2)
         grand_total = round(total_product + total_shipping, 2)
 
         # Calculate savings vs single-merchant baseline
-        single_plan = self._optimize_single_merchant(matrix, prefs)
+        single_plan = self._optimize_single_merchant(matrix, prefs, thresholds)
         savings = round(max(0.0, single_plan.grand_total - grand_total), 2)
 
         # Count distinct merchants
@@ -122,7 +146,8 @@ class SplitOrderOptimizer:
             grand_total=grand_total,
             savings_vs_single=savings,
             merchants_used=len(merchant_ids),
-            reasoning=self._build_reasoning(items, savings),
+            reasoning=self._build_reasoning(items, savings, unavailable),
+            unavailable_items=unavailable,
         )
 
         logger.info(
@@ -142,13 +167,19 @@ class SplitOrderOptimizer:
         self,
         matrix: ComparisonMatrix,
         prefs: ShoppingPreferences,
+        thresholds: dict[str, float] | None = None,
     ) -> SplitOrderPlan:
         """Find the best single merchant to fulfil all items."""
         # Group available products by merchant
         merchant_items: dict[str, list[tuple[str, ProductResult]]] = defaultdict(list)
+        quantities = {entry.product_query: entry.quantity for entry in matrix.entries}
 
+        unavailable: list[str] = []
         for entry in matrix.entries:
-            for result in entry.merchant_results:
+            buyable = [p for p in entry.merchant_results if self._can_supply(p, entry.quantity)]
+            if not buyable:
+                unavailable.append(entry.product_query)
+            for result in buyable:
                 merchant_items[result.merchant_id].append((entry.product_query, result))
 
         # Evaluate each merchant that can fulfil all items
@@ -167,7 +198,7 @@ class SplitOrderOptimizer:
                 continue
 
             items: list[SplitOrderItem] = []
-            for product in item_map.values():
+            for item_query, product in item_map.items():
                 shipping = self._cheapest_shipping_cost(product)
                 items.append(
                     SplitOrderItem(
@@ -177,11 +208,14 @@ class SplitOrderOptimizer:
                         merchant_id=product.merchant_id,
                         merchant_url=self._get_merchant_url(product),
                         price=product.price,
+                        quantity=quantities[item_query],
                         shipping_cost=shipping,
                     )
                 )
 
-            total_product = round(sum(i.price for i in items), 2)
+            items = self._consolidate_shipping(items)
+            items = self._apply_free_shipping_thresholds(items, matrix, thresholds)
+            total_product = round(sum(i.subtotal for i in items), 2)
             total_shipping = round(sum(i.shipping_cost for i in items), 2)
             grand_total = round(total_product + total_shipping, 2)
 
@@ -206,6 +240,7 @@ class SplitOrderOptimizer:
         return SplitOrderPlan(
             items=[],
             reasoning="No single merchant can fulfil all items.",
+            unavailable_items=unavailable,
         )
 
     # ------------------------------------------------------------------
@@ -216,30 +251,29 @@ class SplitOrderOptimizer:
         self,
         items: list[SplitOrderItem],
         matrix: ComparisonMatrix,
+        thresholds: dict[str, float] | None = None,
     ) -> list[SplitOrderItem]:
-        """Zero out shipping for merchants where subtotal exceeds threshold.
+        """Zero out shipping for merchants whose subtotal reaches their threshold.
 
-        This is a simplified model: if the total from a merchant exceeds a
-        known free-shipping threshold, all shipping from that merchant is
-        waived.
+        The threshold comes from the merchant's manifest; merchants that do
+        not publish one use ``DEFAULT_FREE_SHIPPING_THRESHOLD``.
         """
         # Group items by merchant and compute subtotals
         merchant_subtotals: dict[str, float] = defaultdict(float)
         for item in items:
-            merchant_subtotals[item.merchant_id] += item.price
+            merchant_subtotals[item.merchant_id] += item.subtotal
 
-        # Check thresholds (stored in metadata on comparison results)
-        # For now, use a heuristic: free shipping if subtotal >= 100
-        free_shipping_threshold = 100.0
+        known = thresholds or {}
 
         updated: list[SplitOrderItem] = []
         for item in items:
-            if merchant_subtotals[item.merchant_id] >= free_shipping_threshold:
+            threshold = known.get(item.merchant_id, DEFAULT_FREE_SHIPPING_THRESHOLD)
+            if merchant_subtotals[item.merchant_id] >= threshold:
                 updated.append(
                     item.model_copy(
                         update={
                             "shipping_cost": 0.0,
-                            "total": round(item.price, 2),
+                            "total": item.subtotal,
                         }
                     )
                 )
@@ -299,6 +333,40 @@ class SplitOrderOptimizer:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _can_supply(product: ProductResult, quantity: int) -> bool:
+        """True if the product is in stock in the wanted quantity.
+
+        ``stock_quantity == 0`` means the merchant did not report a count, so
+        only the in-stock flag is checked in that case.
+        """
+        if not product.in_stock:
+            return False
+        return product.stock_quantity == 0 or product.stock_quantity >= quantity
+
+    @staticmethod
+    def _consolidate_shipping(items: list[SplitOrderItem]) -> list[SplitOrderItem]:
+        """Charge shipping once per merchant (an order ships as one parcel).
+
+        The highest per-item shipping cost of the merchant is kept on its first
+        item and the others are set to zero.
+        """
+        highest: dict[str, float] = {}
+        for item in items:
+            highest[item.merchant_id] = max(highest.get(item.merchant_id, 0.0), item.shipping_cost)
+
+        charged: set[str] = set()
+        result: list[SplitOrderItem] = []
+        for item in items:
+            shipping = 0.0 if item.merchant_id in charged else highest[item.merchant_id]
+            charged.add(item.merchant_id)
+            result.append(
+                item.model_copy(
+                    update={"shipping_cost": shipping, "total": round(item.subtotal + shipping, 2)}
+                )
+            )
+        return result
+
+    @staticmethod
     def _cheapest_shipping_cost(product: ProductResult) -> float:
         """Return the cheapest shipping cost for a product."""
         if not product.shipping_options:
@@ -311,7 +379,9 @@ class SplitOrderOptimizer:
         return product.url.rsplit("/api", 1)[0] if "/api" in product.url else ""
 
     @staticmethod
-    def _build_reasoning(items: list[SplitOrderItem], savings: float) -> str:
+    def _build_reasoning(
+        items: list[SplitOrderItem], savings: float, unavailable: list[str] | None = None
+    ) -> str:
         """Build a human-readable explanation of the plan."""
         if not items:
             return "No items to purchase."
@@ -327,5 +397,8 @@ class SplitOrderOptimizer:
 
         if savings > 0:
             reasoning += f" Saves ${savings:.2f} compared to single-merchant purchase."
+
+        if unavailable:
+            reasoning += f" Not available in the wanted quantity: {', '.join(unavailable)}."
 
         return reasoning

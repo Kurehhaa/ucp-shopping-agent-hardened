@@ -8,7 +8,7 @@ SSE events, and MCP tool definitions.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +17,15 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # Shopping preferences and requests
 # ---------------------------------------------------------------------------
+
+
+# Upper bound for units of one product in a single order
+MAX_QUANTITY = 99
+
+
+def utcnow() -> datetime:
+    """Timezone-aware current UTC time (datetime.utcnow() is deprecated)."""
+    return datetime.now(tz=UTC)
 
 
 class ShoppingPreferences(BaseModel):
@@ -28,6 +37,22 @@ class ShoppingPreferences(BaseModel):
     max_results_per_merchant: int = 10
     preferred_brands: list[str] = Field(default_factory=list)
     min_rating: float | None = None
+    require_all_merchants: bool = Field(
+        default=False,
+        description="If true, nothing is bought unless every merchant can be prepared.",
+    )
+
+
+class ShippingAddress(BaseModel):
+    """Where the order should be delivered."""
+
+    full_name: str = Field(min_length=1, max_length=200)
+    line1: str = Field(min_length=1, max_length=200)
+    line2: str | None = Field(default=None, max_length=200)
+    city: str = Field(min_length=1, max_length=100)
+    state: str = Field(default="", max_length=100)
+    postal_code: str = Field(min_length=1, max_length=20)
+    country: str = Field(min_length=2, max_length=2, description="ISO 3166-1 alpha-2 code")
 
 
 class ShoppingRequest(BaseModel):
@@ -35,6 +60,7 @@ class ShoppingRequest(BaseModel):
 
     query: str
     budget: Decimal | None = None
+    shipping_address: ShippingAddress | None = None
     preferences: ShoppingPreferences = Field(default_factory=ShoppingPreferences)
 
 
@@ -68,9 +94,10 @@ class ShoppingSession(BaseModel):
     comparison: ComparisonMatrix | None = None
     optimization_plan: SplitOrderPlan | None = None
     orders: list[OrderSummary] = Field(default_factory=list)
+    checkout_failures: list[CheckoutFailure] = Field(default_factory=list)
     error: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +167,7 @@ class ComparisonEntry(BaseModel):
     """Comparison of a single product query across merchants."""
 
     product_query: str
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     merchant_results: list[ProductResult] = Field(default_factory=list)
     best_price: ProductResult | None = None
     best_shipping: ProductResult | None = None
@@ -152,7 +180,7 @@ class ComparisonMatrix(BaseModel):
     entries: list[ComparisonEntry] = Field(default_factory=list)
     total_merchants: int = 0
     total_products_found: int = 0
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +196,20 @@ class SplitOrderItem(BaseModel):
     merchant_name: str
     merchant_id: str
     merchant_url: str = ""
-    price: float
+    price: float = Field(description="Unit price")
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     shipping_cost: float
     total: float = 0.0
 
+    @property
+    def subtotal(self) -> float:
+        """Unit price times quantity, without shipping."""
+        return round(self.price * self.quantity, 2)
+
     def model_post_init(self, __context: Any) -> None:
-        """Compute item total if not provided."""
+        """Compute item total (price x quantity + shipping) if not provided."""
         if self.total == 0.0:
-            self.total = round(self.price + self.shipping_cost, 2)
+            self.total = round(self.subtotal + self.shipping_cost, 2)
 
 
 class SplitOrderPlan(BaseModel):
@@ -188,6 +222,12 @@ class SplitOrderPlan(BaseModel):
     savings_vs_single: float = 0.0
     merchants_used: int = 0
     reasoning: str = ""
+    budget: float | None = None
+    over_budget: bool = False
+    unavailable_items: list[str] = Field(
+        default_factory=list,
+        description="Requested items no merchant can supply in the wanted quantity.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +256,35 @@ class OrderSummary(BaseModel):
     total: float = 0.0
     status: str = "confirmed"
     tracking_url: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class CheckoutFailure(BaseModel):
+    """A merchant where checkout did not end in a confirmed order."""
+
+    merchant_id: str
+    merchant_name: str
+    step: str = Field(description="prepare, complete or cancelled")
+    error: str
+
+
+class CheckoutResult(BaseModel):
+    """Outcome of a multi-merchant checkout."""
+
+    orders: list[OrderSummary] = Field(default_factory=list)
+    failures: list[CheckoutFailure] = Field(default_factory=list)
+
+    @property
+    def succeeded(self) -> bool:
+        """True when every merchant produced a confirmed order."""
+        return bool(self.orders) and not self.failures
+
+    def summary(self) -> str:
+        """One-line description for logs and the user."""
+        if not self.failures:
+            return f"{len(self.orders)} order(s) placed."
+        names = ", ".join(f"{f.merchant_name} ({f.step})" for f in self.failures)
+        return f"{len(self.orders)} order(s) placed; not completed: {names}."
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +299,7 @@ class ShoppingEvent(BaseModel):
     session_id: str
     data: dict[str, Any] = Field(default_factory=dict)
     message: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +333,7 @@ class ShoppingPlanItem(BaseModel):
     """A single item the planner extracted from the user query."""
 
     name: str
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     keywords: list[str] = Field(default_factory=list)
     budget: Decimal | None = None
     brand_preference: str | None = None

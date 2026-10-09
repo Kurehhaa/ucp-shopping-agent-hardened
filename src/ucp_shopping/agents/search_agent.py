@@ -23,7 +23,9 @@ class SearchAgent:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._ucp_client = UCPClient(timeout=settings.comparison_timeout)
+        self._ucp_client = UCPClient(
+            timeout=settings.comparison_timeout, guard=settings.merchant_url_guard()
+        )
 
     async def search_all_merchants(
         self,

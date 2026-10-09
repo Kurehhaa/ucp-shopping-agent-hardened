@@ -19,10 +19,10 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from common import ErrorResponse, HealthResponse
@@ -34,6 +34,7 @@ from ucp_shopping.config import Settings
 from ucp_shopping.models import (
     MerchantInfo,
     OrderSummary,
+    ShippingAddress,
     ShoppingPreferences,
     ShoppingRequest,
     ShoppingSession,
@@ -42,6 +43,7 @@ from ucp_shopping.models import (
 from ucp_shopping.orchestrator.graph import compile_shopping_graph
 from ucp_shopping.orchestrator.state import ShoppingGraphState
 from ucp_shopping.protocols.mcp_surface import MCPToolHandler, list_tools
+from ucp_shopping.security import make_admin_dependency
 from ucp_shopping.streaming import ShoppingEventStream
 
 logger = structlog.get_logger(__name__)
@@ -55,28 +57,36 @@ logger = structlog.get_logger(__name__)
 class ShopRequest(BaseModel):
     """Incoming shopping request."""
 
-    query: str
-    budget: float | None = None
+    query: str = Field(min_length=1, max_length=1000)
+    budget: float | None = Field(default=None, ge=0, le=1_000_000)
+    shipping_address: ShippingAddress | None = None
     preferences: ShoppingPreferences = Field(default_factory=ShoppingPreferences)
 
 
 class CompareRequest(BaseModel):
     """Price comparison request."""
 
-    product_query: str
-    max_results_per_merchant: int = 10
+    product_query: str = Field(min_length=1, max_length=300)
+    max_results_per_merchant: int = Field(default=10, ge=1, le=50)
 
 
 class OptimizeRequest(BaseModel):
     """Split-order optimization request."""
 
-    session_id: str
+    session_id: str = Field(max_length=64)
 
 
 class DiscoverRequest(BaseModel):
     """Merchant discovery request."""
 
-    urls: list[str]
+    urls: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("urls")
+    @classmethod
+    def _url_length(cls, urls: list[str]) -> list[str]:
+        if any(len(u) > 2048 for u in urls):
+            raise ValueError("URL too long")
+        return urls
 
 
 class ToolExecuteRequest(BaseModel):
@@ -96,6 +106,11 @@ class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, ShoppingSession] = {}
         self._graph_tasks: dict[str, asyncio.Task[Any]] = {}
+
+    def active_count(self) -> int:
+        """Number of sessions that have not reached a terminal state."""
+        done = (ShoppingSessionState.COMPLETED, ShoppingSessionState.FAILED)
+        return sum(1 for s in self._sessions.values() if s.state not in done)
 
     async def create_session(self, request: ShoppingRequest) -> ShoppingSession:
         """Create a new shopping session."""
@@ -174,11 +189,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=settings.cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-API-Key"],
     )
+
+    require_admin = make_admin_dependency(settings.admin_api_key)
 
     # Shared state
     state = AppState(settings)
@@ -214,8 +231,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         shopping_req = ShoppingRequest(
             query=req.query,
             budget=budget,
+            shipping_address=req.shipping_address,
             preferences=req.preferences,
         )
+        if state.session_manager.active_count() >= settings.max_active_sessions:
+            raise HTTPException(
+                status_code=503, detail="Too many active shopping sessions, try again later."
+            )
         session = await state.session_manager.create_session(shopping_req)
 
         # Run the graph asynchronously
@@ -241,6 +263,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "user_confirmed": False,
                 "active_checkouts": [],
                 "completed_orders": [],
+                "checkout_failures": [],
                 "error": None,
                 "messages": [],
             }
@@ -282,6 +305,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     session.id,
                     state=final_state,
                     orders=orders,
+                    checkout_failures=result.get("checkout_failures", []),
                     error=result.get("error"),
                 )
                 for order in orders:
@@ -400,7 +424,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         optimizer = SplitOrderOptimizer()
-        plan = await optimizer.optimize(session.comparison, session.request.preferences)
+        budget = session.request.budget
+        plan = await optimizer.optimize(
+            session.comparison,
+            session.request.preferences,
+            budget=float(budget) if budget is not None else None,
+            free_shipping_thresholds={
+                m.id: m.free_shipping_threshold
+                for m in session.merchants
+                if m.free_shipping_threshold is not None
+            },
+        )
         state.session_manager.update_session(req.session_id, optimization_plan=plan)
         return plan.model_dump()
 
@@ -423,7 +457,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "total": len(state.merchants),
         }
 
-    @app.post("/api/v1/merchants/discover", tags=["merchants"])
+    @app.post(
+        "/api/v1/merchants/discover",
+        tags=["merchants"],
+        dependencies=[Depends(require_admin)],
+    )
     async def discover_merchants(req: DiscoverRequest) -> dict[str, Any]:
         """Discover new UCP merchants at the given URLs."""
         discovery = DiscoveryAgent(settings)
@@ -501,12 +539,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        logger.error("unhandled_exception", error=str(exc), path=request.url.path)
+        reference = uuid.uuid4().hex[:12]
+        logger.error(
+            "unhandled_exception",
+            error=str(exc),
+            path=request.url.path,
+            reference=reference,
+        )
+        detail = str(exc) if settings.expose_error_details else f"Reference: {reference}"
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
                 error="Internal server error",
-                detail=str(exc),
+                detail=detail,
                 status_code=500,
             ).model_dump(),
         )

@@ -219,7 +219,8 @@ def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream)
         )
 
         try:
-            matrix = await comparison.build_comparison(search_results, item_names)
+            quantities = {item.name: item.quantity for item in (plan.items if plan else [])}
+            matrix = await comparison.build_comparison(search_results, item_names, quantities)
             await stream.emit(
                 session_id,
                 EVENT_COMPARISON_READY,
@@ -243,6 +244,17 @@ def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream)
     return compare_node
 
 
+def _effective_budget(state: ShoppingGraphState) -> float | None:
+    """The budget the user gave, falling back to the one the planner extracted."""
+    request = state.get("request")
+    if request is not None and request.budget is not None:
+        return float(request.budget)
+    plan = state.get("shopping_plan")
+    if plan is not None and plan.overall_budget is not None:
+        return float(plan.overall_budget)
+    return None
+
+
 def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStream) -> NodeFn:
     """Create the *optimize* node function."""
 
@@ -261,7 +273,16 @@ def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStr
         )
 
         try:
-            plan = await optimizer.optimize(matrix, preferences)
+            plan = await optimizer.optimize(
+                matrix,
+                preferences,
+                budget=_effective_budget(state),
+                free_shipping_thresholds={
+                    m.id: m.free_shipping_threshold
+                    for m in state.get("discovered_merchants", [])
+                    if m.free_shipping_threshold is not None
+                },
+            )
             await stream.emit(
                 session_id,
                 EVENT_OPTIMIZATION_READY,
@@ -297,6 +318,18 @@ def _make_present_node(stream: ShoppingEventStream) -> NodeFn:
         session_id = state.get("session_id", "")
         plan = state.get("optimization_plan")
 
+        if plan is None or not plan.items:
+            reasons = [state.get("error")] if state.get("error") else []
+            if plan is not None and plan.unavailable_items:
+                reasons.append("Not available: " + ", ".join(plan.unavailable_items))
+            message = "Nothing to order. " + " ".join(str(r) for r in reasons)
+            await stream.emit(session_id, EVENT_ERROR, message=message.strip())
+            return {
+                **state,
+                "current_state": ShoppingSessionState.FAILED,
+                "error": message.strip(),
+            }
+
         summary_lines: list[str] = []
         if plan:
             summary_lines.append(f"Total: ${plan.grand_total:.2f}")
@@ -307,6 +340,16 @@ def _make_present_node(stream: ShoppingEventStream) -> NodeFn:
                 )
             if plan.savings_vs_single > 0:
                 summary_lines.append(f"  Savings vs single merchant: ${plan.savings_vs_single:.2f}")
+            if plan.unavailable_items:
+                summary_lines.append(
+                    "  NOT INCLUDED (unavailable in the wanted quantity): "
+                    + ", ".join(plan.unavailable_items)
+                )
+            if plan.over_budget:
+                summary_lines.append(
+                    f"  OVER BUDGET: ${plan.grand_total:.2f} > ${plan.budget:.2f}. "
+                    "This order will not be placed."
+                )
 
         await stream.emit(
             session_id,
@@ -356,6 +399,24 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
         if not plan:
             return {**state, "error": "No optimization plan for checkout."}
 
+        if plan.over_budget:
+            message = (
+                f"Not ordered: the total ${plan.grand_total:.2f} is above your budget "
+                f"of ${plan.budget:.2f}."
+                if plan.budget is not None
+                else "Over budget."
+            )
+            await stream.emit(session_id, EVENT_ERROR, message=message)
+            return {
+                **state,
+                "current_state": ShoppingSessionState.FAILED,
+                "error": message,
+            }
+        if not plan.items:
+            message = "Not ordered: nothing in the plan can be bought."
+            await stream.emit(session_id, EVENT_ERROR, message=message)
+            return {**state, "current_state": ShoppingSessionState.FAILED, "error": message}
+
         await stream.emit(
             session_id,
             EVENT_CHECKING_OUT,
@@ -364,12 +425,25 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
 
         try:
             merchants_map = {m.id: m for m in merchants}
-            orders = await checkout_agent.execute_checkouts(plan, merchants_map, stream, session_id)
+            request = state.get("request")
+            outcome = await checkout_agent.execute_checkouts(
+                plan,
+                merchants_map,
+                stream,
+                session_id,
+                shipping_address=request.shipping_address if request else None,
+                require_all_merchants=bool(request and request.preferences.require_all_merchants),
+            )
             return {
                 **state,
-                "completed_orders": orders,
-                "current_state": ShoppingSessionState.COMPLETED,
-                "error": None,
+                "completed_orders": outcome.orders,
+                "checkout_failures": outcome.failures,
+                "current_state": (
+                    ShoppingSessionState.COMPLETED
+                    if outcome.orders
+                    else ShoppingSessionState.FAILED
+                ),
+                "error": None if outcome.succeeded else outcome.summary(),
             }
         except Exception as exc:
             logger.exception("checkout_node_error")
@@ -385,20 +459,32 @@ def _make_complete_node(stream: ShoppingEventStream) -> NodeFn:
     async def complete_node(state: ShoppingGraphState) -> ShoppingGraphState:
         session_id = state.get("session_id", "")
         orders = state.get("completed_orders", [])
+        failures = state.get("checkout_failures", [])
 
+        if not orders:
+            reason = state.get("error") or "No order could be placed."
+            await stream.emit(
+                session_id,
+                EVENT_ERROR,
+                data={"failures": [f.model_dump() for f in failures]},
+                message=f"No order was placed. {reason}",
+            )
+            return {**state, "current_state": ShoppingSessionState.FAILED}
+
+        message = f"Shopping complete! {len(orders)} order(s) placed."
+        if failures:
+            message += f" {len(failures)} merchant(s) could not be completed."
         await stream.emit(
             session_id,
             EVENT_COMPLETED,
             data={
                 "order_count": len(orders),
-                "orders": [o.model_dump() for o in orders] if orders else [],
+                "orders": [o.model_dump() for o in orders],
+                "failures": [f.model_dump() for f in failures],
             },
-            message=f"Shopping complete! {len(orders)} order(s) placed.",
+            message=message,
         )
-        return {
-            **state,
-            "current_state": ShoppingSessionState.COMPLETED,
-        }
+        return {**state, "current_state": ShoppingSessionState.COMPLETED}
 
     return complete_node
 
@@ -432,11 +518,31 @@ def _after_compare(state: ShoppingGraphState) -> str:
     return "optimize"  # Always optimize even for single items for consistency
 
 
+def _entry(state: ShoppingGraphState) -> str:
+    """Pick the entry node.
+
+    A confirmed session is resumed at checkout; re-running it from the start
+    would plan, search and compare all over again.
+    """
+    return "checkout" if state.get("user_confirmed", False) else "plan"
+
+
+def _after_present(state: ShoppingGraphState) -> str:
+    """Stop early when there is nothing to confirm."""
+    if state.get("current_state") == ShoppingSessionState.FAILED:
+        return "fail"
+    return "wait"
+
+
 def _after_wait(state: ShoppingGraphState) -> str:
-    """Route after human confirmation gate."""
+    """Route after the confirmation gate.
+
+    Without confirmation the graph pauses (ends the run, state stays
+    AWAITING_CONFIRMATION); the API resumes it with ``user_confirmed`` set.
+    """
     if state.get("user_confirmed", False):
         return "checkout"
-    return "fail"
+    return "pause"
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +592,7 @@ def build_shopping_graph(
     graph.add_node("fail", _fail_node)
 
     # Entry point
-    graph.set_entry_point("plan")
+    graph.set_conditional_entry_point(_entry, {"plan": "plan", "checkout": "checkout"})
 
     # Edges
     graph.add_edge("plan", "discover")
@@ -506,12 +612,16 @@ def build_shopping_graph(
     )
 
     graph.add_edge("optimize", "present")
-    graph.add_edge("present", "wait_for_confirmation")
+    graph.add_conditional_edges(
+        "present",
+        _after_present,
+        {"wait": "wait_for_confirmation", "fail": "fail"},
+    )
 
     graph.add_conditional_edges(
         "wait_for_confirmation",
         _after_wait,
-        {"checkout": "checkout", "fail": "fail"},
+        {"checkout": "checkout", "pause": END},
     )
 
     graph.add_edge("checkout", "complete")

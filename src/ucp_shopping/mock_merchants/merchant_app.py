@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -121,6 +121,7 @@ class MockMerchantApp:
 
         # In-memory state
         self._checkout_sessions: dict[str, dict[str, Any]] = {}
+        self._idempotent_sessions: dict[str, str] = {}
         self._orders: dict[str, dict[str, Any]] = {}
 
         # Enrich products with merchant info and shipping
@@ -290,8 +291,13 @@ class MockMerchantApp:
         # -- Checkout --------------------------------------------------
 
         @app.post("/api/v1/checkout/sessions")
-        async def create_checkout(req: CreateCheckoutRequest) -> dict[str, Any]:
-            """Create a new checkout session."""
+        async def create_checkout(
+            req: CreateCheckoutRequest,
+            idempotency_key: Annotated[str | None, Header()] = None,
+        ) -> dict[str, Any]:
+            """Create a new checkout session (idempotent per Idempotency-Key)."""
+            if idempotency_key and idempotency_key in merchant._idempotent_sessions:
+                return merchant._checkout_sessions[merchant._idempotent_sessions[idempotency_key]]
             session_id = str(uuid.uuid4())
 
             # Resolve line items
@@ -341,7 +347,21 @@ class MockMerchantApp:
                 "updated_at": datetime.now(tz=UTC).isoformat(),
             }
             merchant._checkout_sessions[session_id] = session
+            if idempotency_key:
+                merchant._idempotent_sessions[idempotency_key] = session_id
             return session
+
+        @app.delete("/api/v1/checkout/sessions/{session_id}")
+        async def cancel_checkout(session_id: str) -> dict[str, Any]:
+            """Cancel a session that has not produced an order yet."""
+            session = merchant._checkout_sessions.get(session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Checkout session not found")
+            if session["state"] == "completed":
+                raise HTTPException(status_code=409, detail="Session already completed")
+            session["state"] = "canceled"
+            session["updated_at"] = datetime.now(tz=UTC).isoformat()
+            return {"id": session_id, "state": "canceled"}
 
         @app.put("/api/v1/checkout/sessions/{session_id}")
         async def update_checkout(session_id: str, req: UpdateCheckoutRequest) -> dict[str, Any]:
@@ -390,6 +410,16 @@ class MockMerchantApp:
             session = merchant._checkout_sessions.get(session_id)
             if session is None:
                 raise HTTPException(status_code=404, detail="Checkout session not found")
+
+            if session["state"] == "completed":
+                # Idempotent: repeating a completion returns the same order.
+                return {
+                    "id": session_id,
+                    "state": "completed",
+                    "order_id": session["order_id"],
+                    "total": session["total"],
+                    "tracking_url": merchant._orders[session["order_id"]]["tracking_url"],
+                }
 
             if session["state"] not in ("ready_for_complete", "incomplete"):
                 raise HTTPException(

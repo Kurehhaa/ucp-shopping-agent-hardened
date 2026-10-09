@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from ucp_shopping.models import (
+    CheckoutFailure,
     CheckoutStatus,
     ComparisonMatrix,
     MerchantInfo,
@@ -56,6 +57,7 @@ class ShoppingGraphState(TypedDict, total=False):
     # --- Checkout -------------------------------------------------------------
     active_checkouts: list[CheckoutStatus]
     completed_orders: list[OrderSummary]
+    checkout_failures: list[CheckoutFailure]
 
     # --- Error handling -------------------------------------------------------
     error: str | None

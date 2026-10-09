@@ -22,7 +22,9 @@ class DiscoveryAgent:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._ucp_client = UCPClient(timeout=settings.discovery_timeout)
+        self._ucp_client = UCPClient(
+            timeout=settings.discovery_timeout, guard=settings.merchant_url_guard()
+        )
 
     async def discover_merchants(
         self,
