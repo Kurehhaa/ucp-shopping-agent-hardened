@@ -244,6 +244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "user_confirmed": False,
                 "active_checkouts": [],
                 "completed_orders": [],
+                "checkout_failures": [],
                 "error": None,
                 "messages": [],
             }
@@ -285,6 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     session.id,
                     state=final_state,
                     orders=orders,
+                    checkout_failures=result.get("checkout_failures", []),
                     error=result.get("error"),
                 )
                 for order in orders:

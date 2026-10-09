@@ -366,18 +366,24 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
         try:
             merchants_map = {m.id: m for m in merchants}
             request = state.get("request")
-            orders = await checkout_agent.execute_checkouts(
+            outcome = await checkout_agent.execute_checkouts(
                 plan,
                 merchants_map,
                 stream,
                 session_id,
                 shipping_address=request.shipping_address if request else None,
+                require_all_merchants=bool(request and request.preferences.require_all_merchants),
             )
             return {
                 **state,
-                "completed_orders": orders,
-                "current_state": ShoppingSessionState.COMPLETED,
-                "error": None,
+                "completed_orders": outcome.orders,
+                "checkout_failures": outcome.failures,
+                "current_state": (
+                    ShoppingSessionState.COMPLETED
+                    if outcome.orders
+                    else ShoppingSessionState.FAILED
+                ),
+                "error": None if outcome.succeeded else outcome.summary(),
             }
         except Exception as exc:
             logger.exception("checkout_node_error")
@@ -393,20 +399,32 @@ def _make_complete_node(stream: ShoppingEventStream) -> NodeFn:
     async def complete_node(state: ShoppingGraphState) -> ShoppingGraphState:
         session_id = state.get("session_id", "")
         orders = state.get("completed_orders", [])
+        failures = state.get("checkout_failures", [])
 
+        if not orders:
+            reason = state.get("error") or "No order could be placed."
+            await stream.emit(
+                session_id,
+                EVENT_ERROR,
+                data={"failures": [f.model_dump() for f in failures]},
+                message=f"No order was placed. {reason}",
+            )
+            return {**state, "current_state": ShoppingSessionState.FAILED}
+
+        message = f"Shopping complete! {len(orders)} order(s) placed."
+        if failures:
+            message += f" {len(failures)} merchant(s) could not be completed."
         await stream.emit(
             session_id,
             EVENT_COMPLETED,
             data={
                 "order_count": len(orders),
-                "orders": [o.model_dump() for o in orders] if orders else [],
+                "orders": [o.model_dump() for o in orders],
+                "failures": [f.model_dump() for f in failures],
             },
-            message=f"Shopping complete! {len(orders)} order(s) placed.",
+            message=message,
         )
-        return {
-            **state,
-            "current_state": ShoppingSessionState.COMPLETED,
-        }
+        return {**state, "current_state": ShoppingSessionState.COMPLETED}
 
     return complete_node
 

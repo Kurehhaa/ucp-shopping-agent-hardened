@@ -23,6 +23,10 @@ class UCPClientError(Exception):
     """Raised when a UCP request fails after retries."""
 
 
+def _idempotency_headers(key: str | None) -> dict[str, str] | None:
+    return {"Idempotency-Key": key} if key else None
+
+
 class UCPClient:
     """Async HTTP client for the Universal Commerce Protocol."""
 
@@ -59,8 +63,13 @@ class UCPClient:
         url: str,
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Execute an HTTP request with retries and error mapping."""
+        """Execute an HTTP request with retries and error mapping.
+
+        Writes that may be retried must carry an ``Idempotency-Key`` header so
+        a retry after a timeout cannot create a second order.
+        """
         client = await self._get_client()
         last_error: Exception | None = None
 
@@ -71,6 +80,7 @@ class UCPClient:
                     url,
                     json=json_body,
                     params=params,
+                    headers=headers,
                 )
                 response.raise_for_status()
                 data: dict[str, Any] = response.json()
@@ -272,6 +282,7 @@ class UCPClient:
         self,
         merchant_url: str,
         line_items: list[dict[str, Any]],
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Create a new checkout session at the merchant.
 
@@ -288,7 +299,12 @@ class UCPClient:
             The created checkout session.
         """
         url = f"{merchant_url.rstrip('/')}/api/v1/checkout/sessions"
-        return await self._request("POST", url, json_body={"line_items": line_items})
+        return await self._request(
+            "POST",
+            url,
+            json_body={"line_items": line_items},
+            headers=_idempotency_headers(idempotency_key),
+        )
 
     async def update_checkout(
         self,
@@ -319,6 +335,7 @@ class UCPClient:
         self,
         merchant_url: str,
         session_id: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Complete a checkout session and place the order.
 
@@ -335,7 +352,12 @@ class UCPClient:
             The completed order details.
         """
         url = f"{merchant_url.rstrip('/')}/api/v1/checkout/sessions/{session_id}/complete"
-        return await self._request("POST", url)
+        return await self._request("POST", url, headers=_idempotency_headers(idempotency_key))
+
+    async def cancel_checkout(self, merchant_url: str, session_id: str) -> dict[str, Any]:
+        """Cancel a checkout session that has not been completed."""
+        url = f"{merchant_url.rstrip('/')}/api/v1/checkout/sessions/{session_id}"
+        return await self._request("DELETE", url)
 
     async def get_order(
         self,

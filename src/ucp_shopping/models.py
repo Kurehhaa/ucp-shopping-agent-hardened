@@ -32,6 +32,10 @@ class ShoppingPreferences(BaseModel):
     max_results_per_merchant: int = 10
     preferred_brands: list[str] = Field(default_factory=list)
     min_rating: float | None = None
+    require_all_merchants: bool = Field(
+        default=False,
+        description="If true, nothing is bought unless every merchant can be prepared.",
+    )
 
 
 class ShippingAddress(BaseModel):
@@ -85,6 +89,7 @@ class ShoppingSession(BaseModel):
     comparison: ComparisonMatrix | None = None
     optimization_plan: SplitOrderPlan | None = None
     orders: list[OrderSummary] = Field(default_factory=list)
+    checkout_failures: list[CheckoutFailure] = Field(default_factory=list)
     error: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -241,6 +246,34 @@ class OrderSummary(BaseModel):
     status: str = "confirmed"
     tracking_url: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CheckoutFailure(BaseModel):
+    """A merchant where checkout did not end in a confirmed order."""
+
+    merchant_id: str
+    merchant_name: str
+    step: str = Field(description="prepare, complete or cancelled")
+    error: str
+
+
+class CheckoutResult(BaseModel):
+    """Outcome of a multi-merchant checkout."""
+
+    orders: list[OrderSummary] = Field(default_factory=list)
+    failures: list[CheckoutFailure] = Field(default_factory=list)
+
+    @property
+    def succeeded(self) -> bool:
+        """True when every merchant produced a confirmed order."""
+        return bool(self.orders) and not self.failures
+
+    def summary(self) -> str:
+        """One-line description for logs and the user."""
+        if not self.failures:
+            return f"{len(self.orders)} order(s) placed."
+        names = ", ".join(f"{f.merchant_name} ({f.step})" for f in self.failures)
+        return f"{len(self.orders)} order(s) placed; not completed: {names}."
 
 
 # ---------------------------------------------------------------------------

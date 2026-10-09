@@ -133,7 +133,9 @@ class FakeUCPClient:
         self.created: list[list[dict[str, Any]]] = []
         self.updates: list[dict[str, Any]] = []
 
-    async def create_checkout(self, url: str, line_items: list[dict[str, Any]]) -> dict[str, Any]:
+    async def create_checkout(
+        self, url: str, line_items: list[dict[str, Any]], idempotency_key: str | None = None
+    ) -> dict[str, Any]:
         self.created.append(line_items)
         return {"id": "co_1"}
 
@@ -141,8 +143,13 @@ class FakeUCPClient:
         self.updates.append(data)
         return {}
 
-    async def complete_checkout(self, url: str, sid: str) -> dict[str, Any]:
+    async def complete_checkout(
+        self, url: str, sid: str, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
         return {"order_id": "ord_1"}
+
+    async def cancel_checkout(self, url: str, sid: str) -> dict[str, Any]:
+        return {}
 
     async def close(self) -> None:
         return None
@@ -169,8 +176,8 @@ class TestCheckoutDetails:
         agent = CheckoutAgent(Settings())
         fake = FakeUCPClient()
         agent._ucp_client = fake  # type: ignore[assignment]
-        orders = await agent.execute_checkouts(_plan(quantity), MERCHANTS, shipping_address=address)
-        return fake, orders
+        result = await agent.execute_checkouts(_plan(quantity), MERCHANTS, shipping_address=address)
+        return fake, result.orders
 
     async def test_real_quantity_is_sent_to_the_merchant(self):
         fake, orders = await self._run(3, ADDRESS)
