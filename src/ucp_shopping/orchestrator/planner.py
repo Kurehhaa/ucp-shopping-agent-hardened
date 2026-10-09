@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 
 from ucp_shopping.config import Settings
 from ucp_shopping.models import MAX_QUANTITY, ShoppingPlan, ShoppingPlanItem, ShoppingPreferences
@@ -52,6 +53,45 @@ Rules:
 - keywords should be search-engine-friendly terms for the product.
 - If no budget is stated, set budget fields to null.
 """
+
+
+MAX_PLAN_ITEMS = 10
+_LLM_PREFERENCE_KEYS = {"prefer_single_merchant", "max_shipping_days", "prefer_free_shipping"}
+
+
+def _safe_budget(value: Any) -> Decimal | None:
+    """Parse a budget from LLM output; anything not a positive number is dropped."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() and number > 0 else None
+
+
+def _text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v)[:100] for v in value if isinstance(v, str | int | float)][:20]
+
+
+def _parse_item(data: Any) -> ShoppingPlanItem | None:
+    """Build a plan item from one LLM item, or None if it has no usable name."""
+    if not isinstance(data, dict):
+        return None
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    brand = data.get("brand_preference")
+    return ShoppingPlanItem(
+        name=name.strip()[:200],
+        quantity=_safe_quantity(data.get("quantity")),
+        keywords=_text_list(data.get("keywords")),
+        budget=_safe_budget(data.get("budget")),
+        brand_preference=brand[:100] if isinstance(brand, str) and brand else None,
+        features=_text_list(data.get("features")),
+    )
 
 
 def _safe_quantity(value: Any) -> int:
@@ -180,35 +220,42 @@ class ShoppingPlanner:
         except json.JSONDecodeError:
             logger.warning("plan_json_parse_failed", raw_snippet=raw[:200])
             return ShoppingPlanner._plan_with_keywords(original_query)
+        if not isinstance(data, dict):
+            logger.warning("plan_json_not_an_object", kind=type(data).__name__)
+            return ShoppingPlanner._plan_with_keywords(original_query)
 
+        raw_items = data.get("items")
         items: list[ShoppingPlanItem] = []
-        for item_data in data.get("items", []):
-            budget_val = item_data.get("budget")
-            items.append(
-                ShoppingPlanItem(
-                    name=item_data.get("name", ""),
-                    quantity=_safe_quantity(item_data.get("quantity")),
-                    keywords=item_data.get("keywords", []),
-                    budget=Decimal(str(budget_val)) if budget_val is not None else None,
-                    brand_preference=item_data.get("brand_preference"),
-                    features=item_data.get("features", []),
-                )
+        for item_data in raw_items if isinstance(raw_items, list) else []:
+            item = _parse_item(item_data)
+            if item is not None:
+                items.append(item)
+            if len(items) >= MAX_PLAN_ITEMS:
+                break
+
+        if not items:
+            logger.warning("plan_json_without_usable_items")
+            return ShoppingPlanner._plan_with_keywords(original_query)
+
+        prefs_data = data.get("preferences")
+        try:
+            preferences = ShoppingPreferences(
+                **{
+                    key: value
+                    for key, value in (prefs_data if isinstance(prefs_data, dict) else {}).items()
+                    if key in _LLM_PREFERENCE_KEYS
+                }
             )
+        except ValidationError:
+            logger.warning("plan_json_bad_preferences")
+            preferences = ShoppingPreferences()
 
-        overall_budget_val = data.get("overall_budget")
-        prefs_data = data.get("preferences", {})
-
+        reasoning = data.get("reasoning")
         return ShoppingPlan(
             items=items,
-            overall_budget=(
-                Decimal(str(overall_budget_val)) if overall_budget_val is not None else None
-            ),
-            preferences=ShoppingPreferences(
-                prefer_single_merchant=prefs_data.get("prefer_single_merchant", False),
-                max_shipping_days=prefs_data.get("max_shipping_days"),
-                prefer_free_shipping=prefs_data.get("prefer_free_shipping", False),
-            ),
-            reasoning=data.get("reasoning", ""),
+            overall_budget=_safe_budget(data.get("overall_budget")),
+            preferences=preferences,
+            reasoning=reasoning[:500] if isinstance(reasoning, str) else "",
         )
 
     # ------------------------------------------------------------------

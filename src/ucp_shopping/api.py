@@ -424,7 +424,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         optimizer = SplitOrderOptimizer()
-        plan = await optimizer.optimize(session.comparison, session.request.preferences)
+        budget = session.request.budget
+        plan = await optimizer.optimize(
+            session.comparison,
+            session.request.preferences,
+            budget=float(budget) if budget is not None else None,
+            free_shipping_thresholds={
+                m.id: m.free_shipping_threshold
+                for m in session.merchants
+                if m.free_shipping_threshold is not None
+            },
+        )
         state.session_manager.update_session(req.session_id, optimization_plan=plan)
         return plan.model_dump()
 

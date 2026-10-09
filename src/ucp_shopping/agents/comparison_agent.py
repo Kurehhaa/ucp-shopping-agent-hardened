@@ -6,6 +6,8 @@ shipping cost, delivery speed, and stock availability.
 
 from __future__ import annotations
 
+import math
+import re
 from datetime import UTC, datetime
 
 import structlog
@@ -23,6 +25,20 @@ _WEIGHT_PRICE = 0.50
 _WEIGHT_SHIPPING = 0.25
 _WEIGHT_AVAILABILITY = 0.15
 _WEIGHT_DELIVERY = 0.10
+
+
+_MIN_KEYWORD_SHARE = 0.6
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _stem(word: str) -> str:
+    """Strip a plural 's' ("keyboards" -> "keyboard"); "glass" stays "glass"."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
 
 
 class ComparisonAgent:
@@ -139,21 +155,25 @@ class ComparisonAgent:
     ) -> list[ProductResult]:
         """Find products that match the item name using keyword overlap.
 
-        Uses a simple token-overlap heuristic: a product matches if at
-        least one keyword from the item name appears in the product's
-        name, description, or category.
+        Whole words are compared (so "hub" does not match "github"), with a
+        light plural normalisation ("keyboards" matches "keyboard"). A product
+        must contain at least 60% of the item's keywords, so "mechanical
+        keyboard" no longer matches a "mechanical pencil".
         """
-        keywords = {w.lower() for w in item_name.split() if len(w) > 2}
+        keywords = {_stem(w) for w in _words(item_name) if len(w) > 2}
         if not keywords:
-            keywords = {item_name.lower()}
+            keywords = {_stem(w) for w in _words(item_name)} or {item_name.lower()}
+        needed = max(1, math.ceil(len(keywords) * _MIN_KEYWORD_SHARE))
 
         matching: list[ProductResult] = []
         for product in products:
-            product_text = (
-                f"{product.name} {product.description} {product.category} {product.brand}"
-            ).lower()
-            overlap = sum(1 for kw in keywords if kw in product_text)
-            if overlap > 0:
+            product_words = {
+                _stem(w)
+                for w in _words(
+                    f"{product.name} {product.description} {product.category} {product.brand}"
+                )
+            }
+            if len(keywords & product_words) >= needed:
                 matching.append(product)
 
         return matching

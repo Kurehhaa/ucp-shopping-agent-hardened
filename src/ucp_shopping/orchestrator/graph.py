@@ -244,6 +244,17 @@ def _make_compare_node(comparison: ComparisonAgent, stream: ShoppingEventStream)
     return compare_node
 
 
+def _effective_budget(state: ShoppingGraphState) -> float | None:
+    """The budget the user gave, falling back to the one the planner extracted."""
+    request = state.get("request")
+    if request is not None and request.budget is not None:
+        return float(request.budget)
+    plan = state.get("shopping_plan")
+    if plan is not None and plan.overall_budget is not None:
+        return float(plan.overall_budget)
+    return None
+
+
 def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStream) -> NodeFn:
     """Create the *optimize* node function."""
 
@@ -262,7 +273,16 @@ def _make_optimize_node(optimizer: SplitOrderOptimizer, stream: ShoppingEventStr
         )
 
         try:
-            plan = await optimizer.optimize(matrix, preferences)
+            plan = await optimizer.optimize(
+                matrix,
+                preferences,
+                budget=_effective_budget(state),
+                free_shipping_thresholds={
+                    m.id: m.free_shipping_threshold
+                    for m in state.get("discovered_merchants", [])
+                    if m.free_shipping_threshold is not None
+                },
+            )
             await stream.emit(
                 session_id,
                 EVENT_OPTIMIZATION_READY,
@@ -308,6 +328,16 @@ def _make_present_node(stream: ShoppingEventStream) -> NodeFn:
                 )
             if plan.savings_vs_single > 0:
                 summary_lines.append(f"  Savings vs single merchant: ${plan.savings_vs_single:.2f}")
+            if plan.unavailable_items:
+                summary_lines.append(
+                    "  NOT INCLUDED (unavailable in the wanted quantity): "
+                    + ", ".join(plan.unavailable_items)
+                )
+            if plan.over_budget:
+                summary_lines.append(
+                    f"  OVER BUDGET: ${plan.grand_total:.2f} > ${plan.budget:.2f}. "
+                    "This order will not be placed."
+                )
 
         await stream.emit(
             session_id,
@@ -356,6 +386,24 @@ def _make_checkout_node(checkout_agent: CheckoutAgent, stream: ShoppingEventStre
 
         if not plan:
             return {**state, "error": "No optimization plan for checkout."}
+
+        if plan.over_budget:
+            message = (
+                f"Not ordered: the total ${plan.grand_total:.2f} is above your budget "
+                f"of ${plan.budget:.2f}."
+                if plan.budget is not None
+                else "Over budget."
+            )
+            await stream.emit(session_id, EVENT_ERROR, message=message)
+            return {
+                **state,
+                "current_state": ShoppingSessionState.FAILED,
+                "error": message,
+            }
+        if not plan.items:
+            message = "Not ordered: nothing in the plan can be bought."
+            await stream.emit(session_id, EVENT_ERROR, message=message)
+            return {**state, "current_state": ShoppingSessionState.FAILED, "error": message}
 
         await stream.emit(
             session_id,

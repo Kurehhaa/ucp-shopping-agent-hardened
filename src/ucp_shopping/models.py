@@ -217,6 +217,12 @@ class SplitOrderPlan(BaseModel):
     savings_vs_single: float = 0.0
     merchants_used: int = 0
     reasoning: str = ""
+    budget: float | None = None
+    over_budget: bool = False
+    unavailable_items: list[str] = Field(
+        default_factory=list,
+        description="Requested items no merchant can supply in the wanted quantity.",
+    )
 
 
 # ---------------------------------------------------------------------------
