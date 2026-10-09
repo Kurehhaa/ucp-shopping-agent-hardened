@@ -8,7 +8,7 @@ SSE events, and MCP tool definitions.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +21,11 @@ from pydantic import BaseModel, Field
 
 # Upper bound for units of one product in a single order
 MAX_QUANTITY = 99
+
+
+def utcnow() -> datetime:
+    """Timezone-aware current UTC time (datetime.utcnow() is deprecated)."""
+    return datetime.now(tz=UTC)
 
 
 class ShoppingPreferences(BaseModel):
@@ -91,8 +96,8 @@ class ShoppingSession(BaseModel):
     orders: list[OrderSummary] = Field(default_factory=list)
     checkout_failures: list[CheckoutFailure] = Field(default_factory=list)
     error: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +180,7 @@ class ComparisonMatrix(BaseModel):
     entries: list[ComparisonEntry] = Field(default_factory=list)
     total_merchants: int = 0
     total_products_found: int = 0
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +256,7 @@ class OrderSummary(BaseModel):
     total: float = 0.0
     status: str = "confirmed"
     tracking_url: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class CheckoutFailure(BaseModel):
@@ -294,7 +299,7 @@ class ShoppingEvent(BaseModel):
     session_id: str
     data: dict[str, Any] = Field(default_factory=dict)
     message: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
